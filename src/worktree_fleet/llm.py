@@ -144,22 +144,32 @@ def apply_edits(root: Path, edits: list[Edit]) -> list[str]:
             problems.append(f"{edit.path}: outside the repository")
             continue
         if not edit.search.strip():
-            if target.exists() and target.read_text(encoding="utf-8").strip():
+            if target.exists() and _read(target).strip():
                 problems.append(f"{edit.path}: empty SEARCH on a file that already has content")
                 continue
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(edit.replace, encoding="utf-8")
+            _write(target, edit.replace)
             continue
         if not target.exists():
             problems.append(f"{edit.path}: no such file")
             continue
-        text = target.read_text(encoding="utf-8")
+        text = _read(target)
         count = text.count(edit.search)
         if count != 1:
             problems.append(f"{edit.path}: SEARCH text found {count} times, need exactly 1")
             continue
-        target.write_text(text.replace(edit.search, edit.replace, 1), encoding="utf-8")
+        _write(target, text.replace(edit.search, edit.replace, 1))
     return problems
+
+
+# Bytes in, bytes out: text mode would rewrite every line ending on Windows and turn a
+# one-line edit into a whole-file diff.
+def _read(path: Path) -> str:
+    return path.read_bytes().decode("utf-8", errors="replace")
+
+
+def _write(path: Path, text: str) -> None:
+    path.write_bytes(text.encode("utf-8"))
 
 
 class OllamaAgent:

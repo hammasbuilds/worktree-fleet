@@ -109,12 +109,17 @@ def _description_repo(repo):
     for n in range(4):
         repo.commit(
             f"pager {n}",
-            {"pkg/termui.py": f"def echo_via_pager(x):\n    return x  # {n}\n\n\ndef prompt(x):\n"
-             "    return x\n", "tests/test_termui.py": f"def test_pager():\n    pass  # {n}\n",
-             "CHANGES.rst": f"changes {n}\n"},
+            {
+                "pkg/termui.py": f"def echo_via_pager(x):\n    return x  # {n}\n\n\ndef prompt(x):\n"
+                "    return x\n",
+                "tests/test_termui.py": f"def test_pager():\n    pass  # {n}\n",
+                "CHANGES.rst": f"changes {n}\n",
+            },
         )
-    return repo.commit("parser", {"pkg/parser.py": "class OptionParser:\n    def parse_args("
-                                  "self):\n        return 2\n"})
+    return repo.commit(
+        "parser",
+        {"pkg/parser.py": "class OptionParser:\n    def parse_args(self):\n        return 2\n"},
+    )
 
 
 def test_description_predictor_signals(repo):

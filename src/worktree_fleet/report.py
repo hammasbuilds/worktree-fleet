@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import json
 import random
-import re
 from collections import defaultdict
 from collections.abc import Callable, Iterable
 from pathlib import Path
@@ -17,8 +16,7 @@ from pathlib import Path
 from .experiment import record_label
 from .fleet import NOOP
 from .mergequeue import ACCEPTED, AGENT_FAILED, SEMANTIC, TEXTUAL
-
-CHANGELOG = re.compile(r"(^|/)(changes|changelog|history|news)(\.[a-z]+)?$", re.I)
+from .predict import CHANGELOG
 
 Counts = dict[str, float]
 

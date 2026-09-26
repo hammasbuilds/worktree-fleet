@@ -32,7 +32,7 @@ from .agents import Agent, ReplayAgent
 from .fleet import PARALLEL, PREDICTED, SERIAL, Fleet, FleetReport
 from .gitops import Git
 from .mergequeue import AGENT_FAILED, SEMANTIC, TEXTUAL, MergeQueue
-from .predict import PREDICTOR_NAMES, Predictor, build_predictor
+from .predict import PREDICTOR_NAMES, ExcludingPredictor, Predictor, build_predictor
 from .suite import (
     SUITE_ERROR,
     SUITE_TIMEOUT,
@@ -52,6 +52,7 @@ POLICY_SPECS: list[Spec] = [
     (PARALLEL, None, "shuffled", False),
     (PARALLEL, None, "shuffled", True),
     (PREDICTED, "description", "shuffled", False),
+    (PREDICTED, "description", "shuffled", True),
     (PREDICTED, "oracle-files", "shuffled", False),
     (PREDICTED, "oracle-hunks", "shuffled", False),
 ]
@@ -201,6 +202,8 @@ def _run_window(
                 in_memory=True,
             )
             predictor = predictors[pred_name] if pred_name else None
+            if predictor is not None and union:
+                predictor = ExcludingPredictor(predictor)
             report = fleet.run(tasks, window.base, policy, predictor, run_id=run_id)
             record = _record(target, window, report, runner, qtree, window_info)
             record["order"] = order

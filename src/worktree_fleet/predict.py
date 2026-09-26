@@ -279,6 +279,26 @@ def _span(node: ast.AST) -> Hunk:
     return Hunk(start, end - start + 1)
 
 
+# Changelog-style files: every change appends an entry at the same spot.
+CHANGELOG = re.compile(r"(^|/)(changes|changelog|history|news)(\.[a-z]+)?$", re.I)
+
+
+class ExcludingPredictor:
+    """Wraps a predictor and drops files a merge driver makes conflict-free (changelogs
+    under `merge=union`), so they no longer serialise the tasks that touch them."""
+
+    def __init__(self, inner: Predictor, pattern: re.Pattern[str] = CHANGELOG) -> None:
+        self.inner = inner
+        self.pattern = pattern
+        self.name = f"{inner.name}+changelog-union"
+        self.margin = inner.margin
+
+    def footprint(self, task: Task, base: str) -> Footprint:
+        fp = self.inner.footprint(task, base)
+        keep = {f for f in fp.files if not self.pattern.search(f)}
+        return Footprint(files=keep, hunks={f: h for f, h in fp.hunks.items() if f in keep})
+
+
 PREDICTOR_NAMES = ("description", "description-spans", "oracle-files", "oracle-hunks")
 
 

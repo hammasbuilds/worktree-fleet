@@ -164,3 +164,17 @@ def test_predicted_conflicts_and_builder(repo):
         build_predictor("psychic", repo.git)
     with pytest.raises(ValueError, match="no commit"):
         FilePredictor(repo.git).footprint(Task("x", "no commit"), base)
+
+
+def test_excluding_predictor_drops_changelogs(repo):
+    from worktree_fleet.predict import ExcludingPredictor
+
+    base = repo.commit("base", {"CHANGES.rst": "x\n", "a.py": "1\n", "b.py": "1\n"})
+    c1 = repo.commit("c1", {"CHANGES.rst": "x\ny\n", "a.py": "2\n"})
+    c2 = repo.commit("c2", {"CHANGES.rst": "x\ny\nz\n", "b.py": "2\n"})
+    tasks = [Task("1", "", c1), Task("2", "", c2)]
+    plain = FilePredictor(repo.git)
+    assert predicted_conflicts(plain, tasks, base) == {(0, 1): {"CHANGES.rst"}}
+    wrapped = ExcludingPredictor(plain)
+    assert predicted_conflicts(wrapped, tasks, base) == {}
+    assert wrapped.name == "oracle-files+changelog-union"

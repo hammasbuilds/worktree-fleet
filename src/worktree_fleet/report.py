@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import random
+import re
 from collections import defaultdict
 from collections.abc import Callable, Iterable
 from pathlib import Path
@@ -176,53 +177,42 @@ def summarise(records: list[dict], rng: random.Random, resamples: int) -> dict:
 
 
 def predictor_quality(records: list[dict], rng: random.Random, resamples: int) -> dict:
-    """Task-level and pair-level precision/recall of every predictor.
+    """Task-level precision and recall of every predictor.
 
-    Task level: a task is predicted at risk if the predictor pairs it with any earlier task
-    in its window; it actually failed if its first attempt under naive parallelism failed.
-    Pair level: predicted pairs against pairs whose two changes, each replayed alone onto
-    the base, fail to merge (pairs where a replay itself fails are left out).
+    A task is predicted at risk if the predictor pairs it with any earlier task in its
+    window; it actually failed if its first attempt under naive parallelism failed. The
+    `+changelog-union` variants drop changelogs from the file-level footprints and are scored
+    against the naive-parallel run that merged changelogs with the union driver.
     """
-    parallel = [r for r in records if policy_key(r) == "parallel"]
-    names = sorted(parallel[0]["info"]["predicted"]) if parallel else []
+    by_label: dict[str, dict[tuple, dict]] = defaultdict(dict)
+    for r in records:
+        by_label[policy_key(r)][(r["target"], r["size"], r["window"])] = r
+    plain = by_label.get("parallel", {})
+    union = by_label.get("parallel+changelog-union", {})
+    names = sorted(next(iter(plain.values()))["info"]["predicted"]) if plain else []
+    jobs = [(name, name, plain, False) for name in names]
+    jobs += [
+        (f"{name}+changelog-union", name, union, True)
+        for name in ("description", "oracle-files")
+        if name in names
+    ]
     result: dict = {}
-    for name in names:
+    for label, source, runs, drop_changelogs in jobs:
         strata: dict[str, list[Counts]] = defaultdict(list)
-        for record in parallel:
-            c: Counts = defaultdict(float)
-            pairs = {tuple(p) for p in record["info"]["predicted"][name]["pairs"]}
-            risky = {j for _, j in pairs}
-            for j, task in enumerate(record["tasks"]):
-                failed = task["first_outcome"] not in (ACCEPTED, NOOP)
-                semantic = task["first_outcome"] == SEMANTIC
-                flagged = j in risky
-                c["tp"] += failed and flagged
-                c["fp"] += (not failed) and flagged
-                c["fn"] += failed and not flagged
-                c["tn"] += (not failed) and not flagged
-                c["semantic"] += semantic
-                c["semantic_flagged"] += semantic and flagged
-            for i, j, truth in record["info"]["pair_truth"]:
-                if truth is None:
-                    continue
-                flagged = (i, j) in pairs
-                c["ptp"] += truth and flagged
-                c["pfp"] += (not truth) and flagged
-                c["pfn"] += truth and not flagged
-            c["pairs_flagged"] += len(pairs)
-            c["pairs_total"] += record["size"] * (record["size"] - 1) / 2
-            strata[record["target"]].append(c)
-        result[name] = {}
+        for key, record in sorted(runs.items()):
+            info = plain[key]["info"] if key in plain else record["info"]
+            predicted = info["predicted"][source]
+            if drop_changelogs:
+                pairs = _file_pairs(predicted["files"], exclude=CHANGELOG)
+            else:
+                pairs = {tuple(p) for p in predicted["pairs"]}
+            strata[record["target"]].append(_task_counts(record, pairs))
+        result[label] = {}
         for scope in [*sorted(strata), "all"]:
             s = strata if scope == "all" else {scope: strata[scope]}
-            result[name][scope] = {
+            result[label][scope] = {
                 "task_precision": bootstrap(s, _prec("tp", "fp"), rng, resamples),
                 "task_recall": bootstrap(s, _prec("tp", "fn"), rng, resamples),
-                "semantic_recall": bootstrap(
-                    s, ratio("semantic_flagged", "semantic"), rng, resamples
-                ),
-                "pair_precision": bootstrap(s, _prec("ptp", "pfp"), rng, resamples),
-                "pair_recall": bootstrap(s, _prec("ptp", "pfn"), rng, resamples),
                 "pairs_flagged_share": bootstrap(
                     s, ratio("pairs_flagged", "pairs_total"), rng, resamples
                 ),
@@ -231,6 +221,28 @@ def predictor_quality(records: list[dict], rng: random.Random, resamples: int) -
                 },
             }
     return result
+
+
+def _file_pairs(files: list[list[str]], exclude: re.Pattern[str]) -> set[tuple[int, int]]:
+    kept = [{f for f in fs if not exclude.search(f)} for fs in files]
+    return {(i, j) for j in range(len(kept)) for i in range(j) if kept[i] & kept[j]}
+
+
+def _task_counts(record: dict, pairs: set[tuple[int, int]]) -> Counts:
+    c: Counts = defaultdict(float)
+    risky = {j for _, j in pairs}
+    for j, task in enumerate(record["tasks"]):
+        failed = task["first_outcome"] not in (ACCEPTED, NOOP)
+        flagged = j in risky
+        c["tp"] += failed and flagged
+        c["fp"] += (not failed) and flagged
+        c["fn"] += failed and not flagged
+        c["tn"] += (not failed) and not flagged
+        c["semantic"] += task["first_outcome"] == SEMANTIC
+        c["semantic_flagged"] += task["first_outcome"] == SEMANTIC and flagged
+    c["pairs_flagged"] += len(pairs)
+    c["pairs_total"] += record["size"] * (record["size"] - 1) / 2
+    return c
 
 
 def _prec(hit: str, miss: str) -> Callable[[Counts], float]:

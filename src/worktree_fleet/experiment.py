@@ -221,7 +221,7 @@ def _run_window(
 def _window_info(
     git: Git, tasks: list[Task], window: Window, predictors: dict[str, Predictor]
 ) -> dict:
-    """Per-window facts shared by every policy: footprints, predictions, pairwise truth."""
+    """Per-window facts shared by every policy: each task's files and every prediction."""
     files = []
     for task in tasks:
         assert task.commit is not None
@@ -236,23 +236,7 @@ def _window_info(
                 if prints[i].overlaps(prints[j], predictor.margin):
                     pairs.append([i, j])
         predicted[name] = {"pairs": pairs, "files": [sorted(p.files) for p in prints]}
-    # Pairwise textual truth: do tasks i and j, each replayed alone onto the base, merge?
-    replays: list[str | None] = []
-    for task in tasks:
-        assert task.commit is not None
-        result = git.replay(task.commit, window.base)
-        replays.append(
-            git.commit_tree(result.tree, [window.base], task.id) if result.clean else None
-        )
-    truth = []
-    for j in range(len(tasks)):
-        for i in range(j):
-            a, b = replays[i], replays[j]
-            if a is None or b is None:
-                truth.append([i, j, None])
-            else:
-                truth.append([i, j, not git.merge(a, b, base=window.base).clean])
-    return {"files": files, "predicted": predicted, "pair_truth": truth, "replays": replays}
+    return {"files": files, "predicted": predicted}
 
 
 def _record(
@@ -287,7 +271,7 @@ def _record(
         "window": window.index,
         "base": window.base,
         "commits": list(window.commits),
-        "info": {k: v for k, v in info.items() if k != "replays"},
+        "info": info,
         **data,
     }
 

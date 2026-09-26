@@ -34,6 +34,7 @@ from .gitops import Git
 from .mergequeue import AGENT_FAILED, SEMANTIC, TEXTUAL, MergeQueue
 from .predict import PREDICTOR_NAMES, ExcludingPredictor, Predictor, build_predictor
 from .suite import (
+    PSEUDO_IDS,
     SUITE_ERROR,
     SUITE_TIMEOUT,
     SuiteResult,
@@ -274,7 +275,10 @@ def _record(
         elif kind == SEMANTIC and first.branch is not None:
             alone = runner.result(first.branch, qtree)
             blamed = set(first.new_failures)
-            detail = "stale-base" if alone.failed & blamed else "interaction"
+            # A branch whose suite cannot even run alone is broken on its own, whatever the
+            # merged tree then fails on.
+            broken_alone = alone.failed & (blamed | PSEUDO_IDS)
+            detail = "stale-base" if broken_alone else "interaction"
         task_json["first_outcome"] = kind
         task_json["first_detail"] = detail
     return {

@@ -95,6 +95,22 @@ _LIST_DISTS = (
 )
 
 
+def has_pytest_config(root: Path) -> bool:
+    """Whether `root` carries its own pytest configuration."""
+    markers = {
+        "pytest.ini": None,
+        "pyproject.toml": "[tool.pytest",
+        "tox.ini": "[pytest]",
+        "setup.cfg": "[tool:pytest]",
+    }
+    for name, needle in markers.items():
+        path = root / name
+        if path.is_file():
+            if needle is None or needle in path.read_text(encoding="utf-8", errors="replace"):
+                return True
+    return False
+
+
 def parse_junit(path: Path) -> tuple[set[str], int]:
     """Return (failing test ids, number of passing tests) from a junit XML report."""
     root = ET.parse(path).getroot()
@@ -171,10 +187,19 @@ class SuiteRunner:
         env.update(self.config.env)
         with tempfile.TemporaryDirectory(prefix="fleet-junit-") as tmp:
             report = Path(tmp) / "report.xml"
+            # Pin pytest's rootdir to the worktree. Without it, a repository with no pytest
+            # config of its own inherits the nearest one above it, and test ids then embed
+            # the worktree's path - so the same test gets a different id in every worktree.
+            isolation = [f"--rootdir={worktree}"]
+            if not has_pytest_config(worktree):
+                blank = Path(tmp) / "pytest.ini"
+                blank.write_text("[pytest]\n", encoding="utf-8")
+                isolation += ["-c", str(blank)]
             cmd: Sequence[str] = [
                 self.config.python,
                 "-m",
                 "pytest",
+                *isolation,
                 "-q",
                 "-p",
                 "no:cacheprovider",

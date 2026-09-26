@@ -156,3 +156,15 @@ def test_unknown_policy_and_order_are_rejected(repo, tmp_path):
         _fleet(repo, tmp_path).run(tasks, base, "yolo")
     with pytest.raises(ValueError, match="predictor"):
         _fleet(repo, tmp_path).run(tasks, base, "predicted")
+
+
+def test_failed_task_is_requeued_behind_the_rest_of_its_wave(repo, tmp_path):
+    """The dependent change arrives first; its redo waits until its dependency has landed."""
+    base = repo.commit("base", {"f.txt": "1\n2\n3\n4\n5\n6\n"})
+    c1 = repo.commit("c1", {"f.txt": "one\n2\n3\n4\n5\n6\n"})
+    c2 = repo.commit("c2", {"f.txt": "one\ntwo\n3\n4\n5\n6\n"})
+    tasks = [Task("c2", "", c2), Task("c1", "", c1)]
+    report = _fleet(repo, tmp_path, order="listed").run(tasks, base, "parallel", run_id="rq")
+    assert [a.outcome for a in report.records[0].attempts] == [AGENT_FAILED, ACCEPTED]
+    assert report.records[1].final == ACCEPTED
+    assert repo.git.tree_of(report.main) == repo.git.tree_of(c2)

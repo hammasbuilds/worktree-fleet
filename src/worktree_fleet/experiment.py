@@ -284,6 +284,7 @@ def run_experiment(
     cache = cache_root / f"{target.name}-{environment_fingerprint(target.python)}"
     work = cache_root / "work" / target.name
     work.mkdir(parents=True, exist_ok=True)
+    _drop_stale_worktrees(git, work)
     head = git.rev_parse(target.ref)
     commits = history_commits(git, head, target.history)
     bases = [git.parents(c)[0] for c in commits]
@@ -356,6 +357,18 @@ def _done_windows(out: Path, per_window: int) -> set[tuple[str, int, int]]:
             key = (rec["target"], rec["size"], rec["window"])
             done[key] = done.get(key, 0) + 1
     return {k for k, n in done.items() if n >= per_window}
+
+
+def _drop_stale_worktrees(git: Git, work: Path) -> None:
+    """Remove worktrees an interrupted earlier run left under `work` (and only there)."""
+    listing = git.out("worktree", "list", "--porcelain")
+    root = str(work.resolve()).replace("\\", "/").lower()
+    for line in listing.splitlines():
+        if line.startswith("worktree "):
+            path = line.removeprefix("worktree ").strip()
+            if path.replace("\\", "/").lower().startswith(root):
+                _drop_worktree(git, Path(path))
+    git.worktree_prune()
 
 
 def _fresh_worktree(git: Git, path: Path, commit: str) -> None:

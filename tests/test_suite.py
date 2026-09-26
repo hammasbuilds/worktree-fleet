@@ -95,3 +95,20 @@ def test_environment_fingerprint_is_stable(suite_config):
     assert first == environment_fingerprint(suite_config.python)
     assert len(first) == 10
     assert os.path.exists(suite_config.python)
+
+
+def test_test_ids_do_not_depend_on_where_the_worktree_lives(tmp_path, suite_config):
+    """A repo with no pytest config, checked out under a project that has one."""
+    from conftest import RepoBuilder
+
+    outer = tmp_path / "outer"
+    outer.mkdir()
+    (outer / "pyproject.toml").write_text('[tool.pytest.ini_options]\ntestpaths = ["nowhere"]\n')
+    repo = RepoBuilder(tmp_path / "repo")
+    c = repo.commit("c", {"tests/test_a.py": "def test_a():\n    assert False\n"})
+    runner = SuiteRunner(repo.git, suite_config, None)
+    ids = []
+    for name in ("one", "two"):
+        wt = repo.git.worktree_add(outer / name / "deeper", c)
+        ids.append(runner.run_once(wt)[0])
+    assert ids[0] == ids[1] == {"tests.test_a::test_a"}

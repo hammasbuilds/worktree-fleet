@@ -2,17 +2,18 @@
 
 Three policies:
 
-* `serial` - one task at a time, each starting from the latest main. Nothing can collide;
-  the cost is that N tasks take N rounds.
+* `serial` - one task at a time, each starting from the latest main. No two agents are ever
+  in flight together; the cost is that N tasks take N rounds.
 * `parallel` - every task starts from the same base at once; the queue sorts out collisions
   afterwards. One round, plus whatever has to be redone.
 * `predicted` - a predictor guesses which tasks will collide; tasks that are predicted to
   collide go in different waves, and each wave starts from main as the previous wave left it.
 
 A task whose integration fails (the agent could not apply its work, the merge conflicts, or
-the merged result breaks tests) is retried: the agent redoes it from the current main. A
-mechanical `git rebase` would not help - rebasing a branch onto main produces the same tree as
-merging it - so the retry is a redo, and the first attempt counts as wasted work.
+the merged result breaks tests) goes to the back of its wave's queue and, once the rest of
+the wave has landed, the agent redoes it from main as it then stands. A mechanical
+`git rebase` would not help - rebasing a branch onto main produces the same tree as merging
+it - so the retry is a redo, and the failed attempt counts as wasted work.
 """
 
 from __future__ import annotations
@@ -200,21 +201,28 @@ class Fleet:
         integrated: list[int] = []
         for w, wave in enumerate(waves):
             start = queue.main
+            retry: list[int] = []
             with ThreadPoolExecutor(max_workers=max(1, self.max_workers)) as pool:
                 futures = {pool.submit(self._attempt, tasks[i], start, 1, run_id): i for i in wave}
                 if self.order == "completion":
                     # Integrate each branch the moment its agent finishes, as a live fleet does.
-                    for future in as_completed(futures):
-                        self._settle(queue, records[futures[future]], future.result(), w, run_id)
-                        integrated.append(futures[future])
+                    arrivals = ((futures[f], f.result()) for f in as_completed(futures))
                 else:
                     done = {i: f.result() for f, i in futures.items()}
                     sequence = list(wave)
                     if self.order == "shuffled":
                         self._rng.shuffle(sequence)
-                    for i in sequence:
-                        self._settle(queue, records[i], done[i], w, run_id)
-                        integrated.append(i)
+                    arrivals = ((i, done[i]) for i in sequence)
+                for i, attempt in arrivals:
+                    records[i].wave = w
+                    self._offer(queue, records, i, attempt, retry)
+                    integrated.append(i)
+            # A failed task goes to the back of the queue and is redone from main as it
+            # stands once the rest of its wave has landed - as a merge queue re-queues a PR.
+            while retry:
+                i = retry.pop(0)
+                redo = self._attempt(tasks[i], queue.main, len(records[i].attempts) + 1, run_id)
+                self._offer(queue, records, i, redo, retry)
         return FleetReport(
             policy=policy,
             predictor=predictor.name if predictor is not None and policy == PREDICTED else None,
@@ -225,19 +233,21 @@ class Fleet:
             integration_order=integrated,
         )
 
-    def _settle(
-        self, queue: MergeQueue, record: TaskRecord, attempt: Attempt, wave: int, run_id: str
+    def _offer(
+        self,
+        queue: MergeQueue,
+        records: list[TaskRecord],
+        i: int,
+        attempt: Attempt,
+        retry: list[int],
     ) -> None:
-        """Integrate a first attempt, then redo from the current main until accepted."""
-        record.wave = wave
+        """Integrate one attempt; on failure, queue a redo if the task has retries left."""
+        record = records[i]
         self._integrate(queue, attempt, record.task)
         record.attempts.append(attempt)
-        while record.attempts[-1].outcome not in (ACCEPTED, NOOP) and (
-            len(record.attempts) <= self.retries
-        ):
-            redo = self._attempt(record.task, queue.main, len(record.attempts) + 1, run_id)
-            self._integrate(queue, redo, record.task)
-            record.attempts.append(redo)
+        failed = attempt.outcome not in (ACCEPTED, NOOP)
+        if failed and len(record.attempts) <= self.retries:
+            retry.append(i)
 
     def _integrate(self, queue: MergeQueue, attempt: Attempt, task: Task) -> None:
         if attempt.outcome != "pending" or attempt.branch is None:

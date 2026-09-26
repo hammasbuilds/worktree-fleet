@@ -18,3 +18,32 @@ history = 400
 venv = "targets/.venvs/sqlparse"
 pythonpath = ["."]
 pytest_args = ["tests"]
+
+# click's test_stream_lifecycle.py is a 3,000-case thread stress test that takes minutes;
+# the venv carries a metadata stub (click-0.0.0.dist-info) because test_deprecations reads
+# click's installed version and the source tree is imported from PYTHONPATH, not installed.
+[targets.click]
+url = "https://github.com/pallets/click"
+path = "targets/click"
+ref = "06b2a678741131fd577ce170e23e5ca0aeba0309"
+history = 400
+venv = "targets/.venvs/click"
+pythonpath = ["src"]
+pytest_args = ["tests", "--ignore=tests/test_stream_lifecycle.py"]
+
+# The four deselected tests are a prime sieve and three thread-timing tests: together 57 s
+# of a 71 s suite, none of them touched by the window's changes.
+[targets.more-itertools]
+url = "https://github.com/more-itertools/more-itertools"
+path = "targets/more-itertools"
+ref = "fbb9a98d8c7b914fcc952afd4976c1bc8deebe87"
+history = 400
+venv = "targets/.venvs/more-itertools"
+pythonpath = ["."]
+pytest_args = [
+  "tests",
+  "--deselect=tests/test_recipes.py::PrimeFunctionTests::test_primes",
+  "--deselect=tests/test_more.py::TestSerialize::test_concurrent_calls",
+  "--deselect=tests/test_more.py::TestConcurrentTee::test_concurrent_consumers",
+  "--deselect=tests/test_more.py::TestSynchronized::test_concurrent_calls",
+]

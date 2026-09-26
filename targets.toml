@@ -47,3 +47,14 @@ pytest_args = [
   "--deselect=tests/test_more.py::TestConcurrentTee::test_concurrent_consumers",
   "--deselect=tests/test_more.py::TestSynchronized::test_concurrent_calls",
 ]
+
+# The same repository in its Werkzeug 2 era (2021-04 to 2023-09): its tests cannot import
+# Werkzeug 3, so it gets its own environment, and its windows share no commit with `flask`.
+[targets.flask-2x]
+url = "https://github.com/pallets/flask"
+path = "targets/flask"
+ref = "438edcdf01c392619449a6bdbb18f6cf72ef7bb9"
+history = 300
+venv = "targets/.venvs/flask-2x"
+pythonpath = ["src"]
+pytest_args = ["tests"]

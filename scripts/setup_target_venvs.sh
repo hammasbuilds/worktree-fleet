@@ -12,13 +12,14 @@ COMMON="pytest==8.2.2 pluggy==1.6.0 iniconfig==2.3.0 packaging==26.3 colorama==0
 declare -A EXTRA=(
   [flask]="werkzeug==3.1.8 jinja2==3.1.6 itsdangerous==2.2.0 click==8.5.0 blinker==1.9.0 \
 markupsafe==3.0.3 python-dotenv==1.2.3 asgiref==3.12.1 pygments==2.21.0"
+  [flask-2x]="werkzeug==2.3.7 jinja2==3.1.2 itsdangerous==2.2.0 click==8.1.7 blinker==1.9.0 markupsafe==3.0.3 python-dotenv==1.2.3 asgiref==3.12.1"
   [sqlparse]=""
   [click]=""
   [more-itertools]=""
 )
 
 names=("$@")
-[ ${#names[@]} -eq 0 ] && names=(flask sqlparse click more-itertools)
+[ ${#names[@]} -eq 0 ] && names=(flask flask-2x sqlparse click more-itertools)
 for name in "${names[@]}"; do
   venv=".venvs/$name"
   py="$venv/Scripts/python.exe"

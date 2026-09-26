@@ -80,7 +80,11 @@ def test_broken_collection_and_empty_suite_are_errors(repo, tmp_path, suite_conf
     runner = SuiteRunner(repo.git, suite_config, None)
     assert runner.result(broken, wt).failed  # the collection error is a failure
     empty = repo.commit("empty", {"test_s.py": None, "readme.txt": "no tests\n"})
-    assert runner.result(empty, wt).failed == {SUITE_ERROR}
+    nothing = runner.result(empty, wt)
+    assert nothing.failed == {SUITE_ERROR}
+    # An incomplete run is retried from a fresh checkout before it is believed, and the
+    # reason is kept for whoever reads the result.
+    assert nothing.runs == 3 and nothing.detail.startswith("exit 5")
 
 
 def test_timeout_is_reported(repo, tmp_path, suite_config):

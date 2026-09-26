@@ -24,6 +24,7 @@ from .gitops import Git
 # Pseudo-test ids for failures that are not attributable to one test.
 SUITE_ERROR = "<suite-error>"
 SUITE_TIMEOUT = "<suite-timeout>"
+PSEUDO_IDS = frozenset({SUITE_ERROR, SUITE_TIMEOUT})
 
 
 @dataclass
@@ -47,6 +48,7 @@ class SuiteResult:
     passed: int
     duration: float
     runs: int
+    detail: str = ""
 
     @property
     def green(self) -> bool:
@@ -60,6 +62,7 @@ class SuiteResult:
             "passed": self.passed,
             "duration": round(self.duration, 3),
             "runs": self.runs,
+            "detail": self.detail,
         }
 
     @classmethod
@@ -71,6 +74,7 @@ class SuiteResult:
             passed=int(data["passed"]),  # type: ignore[arg-type]
             duration=float(data["duration"]),  # type: ignore[arg-type]
             runs=int(data["runs"]),  # type: ignore[arg-type]
+            detail=str(data.get("detail", "")),
         )
 
 
@@ -157,17 +161,26 @@ class SuiteRunner:
             return hit
         self.git.checkout_tree(worktree, commit)
         started = time.perf_counter()
-        first, passed = self.run_once(worktree)
+        first, passed, detail = self.run_once_detailed(worktree)
         runs = 1
+        # A run that did not complete says nothing about any test. Check out afresh and try
+        # again before believing it: under heavy load a run can die for reasons that have
+        # nothing to do with the tree.
+        while first <= PSEUDO_IDS and first and runs < 3:
+            self.git.checkout_tree(worktree, commit)
+            first, passed, detail = self.run_once_detailed(worktree)
+            runs += 1
         failed, flaky = first, set()
-        if first - self.confirmed:
-            second, passed2 = self.run_once(worktree)
-            runs = 2
+        if first - self.confirmed - PSEUDO_IDS:
+            second, passed2, _ = self.run_once_detailed(worktree)
+            runs += 1
             failed = first & second
             flaky = first ^ second
             passed = min(passed, passed2)
-            self.confirmed |= failed
+            self.confirmed |= failed - PSEUDO_IDS
         result = SuiteResult(tree, failed, flaky, passed, time.perf_counter() - started, runs)
+        if failed & PSEUDO_IDS:
+            result.detail = detail
         self.fresh_runs += runs
         path = self._cache_path(tree)
         if path is not None:
@@ -178,6 +191,11 @@ class SuiteRunner:
 
     def run_once(self, worktree: Path) -> tuple[set[str], int]:
         """One pytest invocation. Returns (failing ids, passing count)."""
+        failed, passed, _ = self.run_once_detailed(worktree)
+        return failed, passed
+
+    def run_once_detailed(self, worktree: Path) -> tuple[set[str], int, str]:
+        """One pytest invocation: (failing ids, passing count, tail of its output)."""
         env = dict(os.environ)
         env.pop("VIRTUAL_ENV", None)
         env["PYTHONDONTWRITEBYTECODE"] = "1"
@@ -223,9 +241,11 @@ class SuiteRunner:
                     timeout=self.config.timeout,
                 )
             except subprocess.TimeoutExpired:
-                return {SUITE_TIMEOUT}, 0
+                return {SUITE_TIMEOUT}, 0, f"no result after {self.config.timeout:.0f}s"
+            lines = (proc.stdout + proc.stderr).strip().splitlines()[-15:]
+            tail = "\n".join([f"exit {proc.returncode}", *lines])
             if not report.exists():
-                return {SUITE_ERROR}, 0
+                return {SUITE_ERROR}, 0, tail
             failed, passed = parse_junit(report)
             # Exit codes 2-4 are interrupted/internal/usage errors: the suite did not run
             # to completion, so a partial pass count must not look like a green tree.
@@ -233,4 +253,4 @@ class SuiteRunner:
                 failed = {SUITE_ERROR}
             if proc.returncode == 5:  # no tests collected at all
                 failed = {SUITE_ERROR}
-            return failed, passed
+            return failed, passed, tail

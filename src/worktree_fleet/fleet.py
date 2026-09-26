@@ -27,7 +27,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .agents import Agent
+from .agents import Agent, InMemoryAgent
 from .gitops import Git
 from .mergequeue import ACCEPTED, AGENT_FAILED, Integration, MergeQueue
 from .predict import Predictor, predicted_conflicts
@@ -159,6 +159,7 @@ class Fleet:
         keep_worktrees: bool = False,
         order: str = "completion",
         seed: int = 0,
+        in_memory: bool = False,
     ) -> None:
         if order not in ORDERS:
             raise ValueError(f"unknown order {order!r}; choose one of {', '.join(ORDERS)}")
@@ -170,6 +171,9 @@ class Fleet:
         self.retries = retries
         self.keep_worktrees = keep_worktrees
         self.order = order
+        # Skip the checkout for agents that can produce a tree without one. Same commits,
+        # same queue - only the worktree is elided; used by the history-replay experiment.
+        self.in_memory = in_memory
         self._rng = random.Random(seed)
         self._worktree_lock = threading.Lock()
 
@@ -260,6 +264,8 @@ class Fleet:
 
     def _attempt(self, task: Task, start: str, number: int, run_id: str) -> Attempt:
         """Give the agent a fresh worktree at `start` and commit whatever it produces."""
+        if self.in_memory and isinstance(self.agent, InMemoryAgent):
+            return self._attempt_in_memory(task, start, number)
         # Flat, run-unique directory names: git names worktree metadata after the basename,
         # and two fleets running at once must never pick the same one.
         path = self.workdir / f"{_slug(run_id)}-{_slug(task.id)}-{number}"
@@ -285,6 +291,19 @@ class Fleet:
                 with self._worktree_lock:
                     self.git.worktree_remove(path)
                     shutil.rmtree(path, ignore_errors=True)
+
+    def _attempt_in_memory(self, task: Task, start: str, number: int) -> Attempt:
+        """The same attempt without a checkout, for agents that can work on trees alone."""
+        assert isinstance(self.agent, InMemoryAgent)
+        tree, result = self.agent.work_on_tree(task, start, self.git)
+        if tree is None:
+            return Attempt(
+                number, start, AGENT_FAILED, conflicted=result.conflicted, note=result.note
+            )
+        if tree == self.git.tree_of(start):
+            return Attempt(number, start, NOOP, note="the agent changed nothing")
+        branch = self.git.commit_tree(tree, [start], f"{task.id}: {task.description[:60]}")
+        return Attempt(number, start, "pending", branch=branch, note=result.note)
 
 
 def _slug(text: str) -> str:

@@ -168,3 +168,15 @@ def test_failed_task_is_requeued_behind_the_rest_of_its_wave(repo, tmp_path):
     assert [a.outcome for a in report.records[0].attempts] == [AGENT_FAILED, ACCEPTED]
     assert report.records[1].final == ACCEPTED
     assert repo.git.tree_of(report.main) == repo.git.tree_of(c2)
+
+
+@pytest.mark.parametrize("policy", ["serial", "parallel"])
+def test_in_memory_replay_matches_the_worktree_path(repo, tmp_path, policy):
+    base, tasks = _independent_edits(repo)
+    live = _fleet(repo, tmp_path / "a", order="listed").run(tasks, base, policy, run_id="a")
+    fast = _fleet(repo, tmp_path / "b", order="listed", in_memory=True).run(
+        tasks, base, policy, run_id="b"
+    )
+    assert repo.git.tree_of(live.main) == repo.git.tree_of(fast.main)
+    for x, y in zip(live.records, fast.records, strict=True):
+        assert [a.outcome for a in x.attempts] == [a.outcome for a in y.attempts]

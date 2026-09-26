@@ -103,3 +103,21 @@ def test_git_error_carries_command_and_survives_pickling(repo):
         assert again.code == exc.code and "rev-parse" in str(again)
     else:
         raise AssertionError("expected GitError")
+
+
+def test_attributes_file_turns_on_the_union_driver(repo, tmp_path):
+    from worktree_fleet.experiment import CHANGELOG_UNION
+    from worktree_fleet.gitops import Git
+
+    base = repo.commit("base", {"CHANGES.rst": "Unreleased\n\n- old\n"})
+    a = repo.commit("a", {"CHANGES.rst": "Unreleased\n\n- entry a\n- old\n"})
+    repo.checkout(base)
+    b = repo.commit("b", {"CHANGES.rst": "Unreleased\n\n- entry b\n- old\n"})
+    assert not repo.git.merge(a, b).clean
+    attrs = tmp_path / "attrs"
+    attrs.write_text(CHANGELOG_UNION)
+    union = Git(repo.path, attributes_file=attrs)
+    merged = union.merge(a, b)
+    assert merged.clean
+    text = union.show_file(union.commit_tree(merged.tree, [a, b], "m"), "CHANGES.rst")
+    assert "- entry a" in text and "- entry b" in text

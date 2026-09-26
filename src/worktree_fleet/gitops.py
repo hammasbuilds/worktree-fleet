@@ -71,8 +71,11 @@ class MergeResult:
 class Git:
     """Run git against one repository (or one of its worktrees)."""
 
-    def __init__(self, repo: Path | str) -> None:
+    def __init__(self, repo: Path | str, attributes_file: Path | None = None) -> None:
         self.repo = Path(repo).resolve()
+        # Extra gitattributes applied to every command - how a run opts into a merge driver
+        # (e.g. `CHANGES.rst merge=union`) without committing anything to the repository.
+        self.attributes_file = attributes_file
 
     def run(
         self,
@@ -86,7 +89,10 @@ class Git:
         env["GIT_TERMINAL_PROMPT"] = "0"
         if fleet_identity:
             env.update(_FLEET_ENV)
-        cmd = ["git", "-c", "core.quotepath=false", "-c", "core.autocrlf=false", *args]
+        cmd = ["git", "-c", "core.quotepath=false", "-c", "core.autocrlf=false"]
+        if self.attributes_file is not None:
+            cmd += ["-c", f"core.attributesFile={self.attributes_file}"]
+        cmd += args
         # Bytes, not text mode: text mode on Windows turns "\n" in stdin into "\r\n", which
         # corrupts `update-ref --stdin` and commit messages.
         raw = subprocess.run(

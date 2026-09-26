@@ -202,7 +202,7 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--policies",
         help="comma-separated subset, e.g. serial,parallel,predicted:description "
-        "(default: all six headline policies)",
+        "(default: all seven headline policies)",
     )
     p.add_argument("--agent", default="replay", choices=("replay", "ollama"))
     p.add_argument("--model", default="qwen2.5-coder:14b")

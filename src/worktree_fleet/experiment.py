@@ -44,29 +44,39 @@ from .targets import Target
 from .tasks import Task
 
 # (policy, predictor, integration order within a wave)
-Spec = tuple[str, str | None, str]
+# (policy, predictor, integration order within a wave, changelogs merged with `union`)
+Spec = tuple[str, str | None, str, bool]
 POLICY_SPECS: list[Spec] = [
-    (SERIAL, None, "listed"),
-    (PARALLEL, None, "listed"),
-    (PARALLEL, None, "shuffled"),
-    (PREDICTED, "description", "shuffled"),
-    (PREDICTED, "oracle-files", "shuffled"),
-    (PREDICTED, "oracle-hunks", "shuffled"),
+    (SERIAL, None, "listed", False),
+    (PARALLEL, None, "listed", False),
+    (PARALLEL, None, "shuffled", False),
+    (PARALLEL, None, "shuffled", True),
+    (PREDICTED, "description", "shuffled", False),
+    (PREDICTED, "oracle-files", "shuffled", False),
+    (PREDICTED, "oracle-hunks", "shuffled", False),
 ]
+
+# git's built-in union driver keeps both sides' lines instead of conflicting: the usual fix
+# for changelogs, where every change appends an entry at the same spot.
+CHANGELOG_UNION = "".join(
+    f"{pattern} merge=union\n" for pattern in ("CHANGES*", "CHANGELOG*", "HISTORY*", "NEWS*")
+)
 
 
 def spec_label(spec: Spec) -> str:
     """The name a spec goes by on the command line and in the report."""
-    policy, predictor, order = spec
+    policy, predictor, order, union = spec
     if policy == PREDICTED:
-        return f"predicted:{predictor}"
-    if policy == PARALLEL and order == "listed":
-        return "parallel:history-order"
-    return policy
+        label = f"predicted:{predictor}"
+    elif policy == PARALLEL and order == "listed":
+        label = "parallel:history-order"
+    else:
+        label = policy
+    return f"{label}+changelog-union" if union else label
 
 
 SPECS_BY_LABEL: dict[str, Spec] = {
-    spec_label(s): s for s in [*POLICY_SPECS, (PREDICTED, "description-spans", "shuffled")]
+    spec_label(s): s for s in [*POLICY_SPECS, (PREDICTED, "description-spans", "shuffled", False)]
 }
 
 
@@ -171,25 +181,31 @@ def _run_window(
     try:
         window_info = _window_info(git, tasks, window, predictors)
         seed = int(window.base[:8], 16)
-        for policy, pred_name, order in specs:
-            run_id = f"{tag}-{policy}-{pred_name or 'none'}-{order}"
+        union_file = work / f"changelog-union-{os.getpid()}.gitattributes"
+        union_file.write_text(CHANGELOG_UNION, encoding="utf-8")
+        for policy, pred_name, order, union in specs:
+            run_id = f"{tag}-{policy}-{pred_name or 'none'}-{order}{'-union' if union else ''}"
+            run_git = Git(target.path, attributes_file=union_file) if union else git
 
-            def factory(base: str, ref: str) -> MergeQueue:
-                return MergeQueue(git, base, ref, runner, qtree, set(ignore))
+            def factory(base: str, ref: str, run_git: Git = run_git) -> MergeQueue:
+                return MergeQueue(run_git, base, ref, runner, qtree, set(ignore))
 
             fleet = Fleet(
-                git,
+                run_git,
                 make_agent(agent_spec),
                 work / "agents",
                 factory,
                 max_workers=4,
                 order=order,
                 seed=seed,
+                in_memory=True,
             )
             predictor = predictors[pred_name] if pred_name else None
             report = fleet.run(tasks, window.base, policy, predictor, run_id=run_id)
             record = _record(target, window, report, runner, qtree, window_info)
             record["order"] = order
+            record["changelog_union"] = union
+            record["label"] = spec_label((policy, pred_name, order, union))
             record["agent"] = (agent_spec or {}).get("kind", "replay")
             records.append(record)
             _delete_refs(git, f"refs/fleet/{run_id}/")
@@ -331,24 +347,30 @@ def run_experiment(
     windows = make_windows(git, commits, sizes, results)
     if max_windows is not None:
         windows = spread(windows, max_windows)
-    done = _done_windows(out, len(specs or POLICY_SPECS))
-    todo = [w for w in windows if (target.name, w.size, w.index) not in done]
-    log(f"[{target.name}] {len(windows)} eligible windows, {len(todo)} still to run")
+    specs = specs or POLICY_SPECS
+    done = _done_labels(out)
+    todo = []
+    for w in windows:
+        have = done.get((target.name, w.size, w.index), set())
+        missing = [s for s in specs if spec_label(s) not in have]
+        if missing:
+            todo.append((w, missing))
+    log(f"[{target.name}] {len(windows)} eligible windows, {len(todo)} with runs still to do")
     if dry_run:
-        runs = len(specs or POLICY_SPECS)
-        tasks = sum(w.size for w in todo)
-        for w in todo:
-            log(f"  job: N={w.size} window #{w.index} base {w.base[:10]}, {runs} policies")
+        calls = 0
+        for w, missing in todo:
+            calls += w.size * len(missing)
+            log(f"  job: N={w.size} window #{w.index} base {w.base[:10]}, {len(missing)} policies")
         log(
-            f"[{target.name}] agent calls: {tasks * runs} first attempts, at most "
-            f"{2 * tasks * runs} with one redo each"
+            f"[{target.name}] agent calls: {calls} first attempts, at most "
+            f"{2 * calls} with one redo each"
         )
         return out
     flaky = set().union(*(r.flaky for r in results.values())) if results else set()
     out.parent.mkdir(parents=True, exist_ok=True)
     with ProcessPoolExecutor(max_workers=workers) as pool:
         futures = {}
-        for w in todo:
+        for w, missing in todo:
             ignore = set(results[w.base].failed) | flaky
             for c in w.commits:
                 ignore |= results[c].failed
@@ -359,7 +381,7 @@ def run_experiment(
                 sorted(ignore),
                 cache,
                 work,
-                specs or POLICY_SPECS,
+                missing,
                 agent_spec,
             )
             futures[future] = w
@@ -393,16 +415,25 @@ def _log(message: str) -> None:
     print(message, flush=True)
 
 
-def _done_windows(out: Path, per_window: int) -> set[tuple[str, int, int]]:
+def _done_labels(out: Path) -> dict[tuple[str, int, int], set[str]]:
+    """Which policy runs each window already has in `out`."""
+    done: dict[tuple[str, int, int], set[str]] = {}
     if not out.exists():
-        return set()
-    done: dict[tuple[str, int, int], int] = {}
+        return done
     for line in out.read_text(encoding="utf-8").splitlines():
         if line.strip():
             rec = json.loads(line)
             key = (rec["target"], rec["size"], rec["window"])
-            done[key] = done.get(key, 0) + 1
-    return {k for k, n in done.items() if n >= per_window}
+            done.setdefault(key, set()).add(record_label(rec))
+    return done
+
+
+def record_label(rec: dict) -> str:
+    """A record's policy label (records written before `label` existed carry no union flag)."""
+    if "label" in rec:
+        return rec["label"]
+    spec = (rec["policy"], rec.get("predictor"), rec.get("order", "shuffled"), False)
+    return spec_label(spec)
 
 
 def _drop_stale_worktrees(git: Git, work: Path) -> None:

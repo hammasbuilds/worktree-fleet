@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Protocol
+from typing import Protocol, runtime_checkable
 
 from .gitops import Git
 from .tasks import Task
@@ -28,6 +28,17 @@ class Agent(Protocol):
     def work(self, task: Task, worktree: Path, git: Git) -> AgentResult: ...
 
 
+@runtime_checkable
+class InMemoryAgent(Protocol):
+    """An agent that can also produce its result as a tree, without a checkout."""
+
+    name: str
+
+    def work(self, task: Task, worktree: Path, git: Git) -> AgentResult: ...
+
+    def work_on_tree(self, task: Task, start: str, git: Git) -> tuple[str | None, AgentResult]: ...
+
+
 class ReplayAgent:
     """Re-applies the real commit that resolved a task, on whatever base it is given.
 
@@ -40,15 +51,20 @@ class ReplayAgent:
     name = "replay"
 
     def work(self, task: Task, worktree: Path, git: Git) -> AgentResult:
-        if task.commit is None:
-            return AgentResult(False, f"task {task.id} has no commit to replay")
         head = git.out("rev-parse", "HEAD", cwd=worktree)
-        result = git.replay(task.commit, head)
+        tree, result = self.work_on_tree(task, head, git)
+        if tree is not None:
+            git.run("read-tree", "--reset", "-u", tree, cwd=worktree)
+        return result
+
+    def work_on_tree(self, task: Task, start: str, git: Git) -> tuple[str | None, AgentResult]:
+        if task.commit is None:
+            return None, AgentResult(False, f"task {task.id} has no commit to replay")
+        result = git.replay(task.commit, start)
         if not result.clean:
-            return AgentResult(
+            return None, AgentResult(
                 False,
                 "the change does not apply to this base: it edits lines this base lacks",
                 result.conflicted,
             )
-        git.run("read-tree", "--reset", "-u", result.tree, cwd=worktree)
-        return AgentResult(True)
+        return result.tree, AgentResult(True)

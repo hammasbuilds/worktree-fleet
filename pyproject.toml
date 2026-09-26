@@ -1,0 +1,49 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "worktree-fleet"
+version = "0.1.0"
+description = "Run a fleet of coding agents in parallel git worktrees, integrate them through a tested merge queue, and measure what parallelism costs"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "hammasbuilds" }]
+keywords = ["git worktree", "merge queue", "coding agents", "parallel agents", "merge conflicts", "semantic conflicts"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Software Development :: Version Control :: Git",
+]
+# No runtime dependencies: git is driven through subprocess, the Ollama client is urllib,
+# statistics are the standard library.
+dependencies = []
+
+[dependency-groups]
+dev = ["pytest>=8.0", "ruff==0.16.7"]
+
+[project.scripts]
+worktree-fleet = "worktree_fleet.cli:main"
+fleet = "worktree_fleet.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/hammasbuilds/worktree-fleet"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/worktree_fleet"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+extend-exclude = ["targets"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

@@ -1,0 +1,20 @@
+# Target repositories for the experiment. `scripts/fetch_targets.sh` clones each one at the
+# pinned `ref` into targets/<name> and builds its test venv; paths are relative to this file.
+
+[targets.flask]
+url = "https://github.com/pallets/flask"
+path = "targets/flask"
+ref = "d73fa1cdcbd8b1465c151db8924ba58b1dd14e35"
+history = 400
+venv = "targets/.venvs/flask"
+pythonpath = ["src"]
+pytest_args = ["tests"]
+
+[targets.sqlparse]
+url = "https://github.com/andialbrecht/sqlparse"
+path = "targets/sqlparse"
+ref = "60cdc649726bf1bc4f1b336050560b336da715ec"
+history = 400
+venv = "targets/.venvs/sqlparse"
+pythonpath = ["."]
+pytest_args = ["tests"]

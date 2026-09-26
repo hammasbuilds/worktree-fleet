@@ -15,6 +15,7 @@ from pathlib import Path
 
 from .experiment import record_label
 from .fleet import NOOP
+from .gitops import Git
 from .mergequeue import ACCEPTED, AGENT_FAILED, SEMANTIC, TEXTUAL
 from .predict import CHANGELOG
 
@@ -252,13 +253,65 @@ def history_facts(runs: Path) -> dict:
     return facts
 
 
-def build_report(runs: Path, seed: int = 0, resamples: int = 2000) -> dict:
+def novel_states(records: list[dict], repos: dict[str, Path], runs: Path) -> dict:
+    """Per target: how many merge candidates the queue tested were states history never had.
+
+    A replay integrated in history's own order, with clean merges, reproduces real commits
+    byte for byte, and those are known to pass. Only a candidate whose tree matches no real
+    commit could reveal a semantic conflict, so this is the number of real chances there were.
+    """
+    facts = {}
+    for target, path in sorted(repos.items()):
+        history = runs / f"{target}-history.json"
+        if not history.exists() or not (path / ".git").exists():
+            continue
+        git = Git(path)
+        real = set(_trees(git, list(json.loads(history.read_text(encoding="utf-8"))["results"])))
+        mine = [r for r in records if r["target"] == target]
+        candidates = sorted(
+            {
+                a["candidate"]
+                for r in mine
+                for t in r["tasks"]
+                for a in t["attempts"]
+                if a["candidate"]
+            }
+        )
+        tree_of = dict(zip(candidates, _trees(git, candidates), strict=True))
+        novel = {tree for tree in tree_of.values() if tree not in real}
+        broke = {
+            tree_of[a["candidate"]]
+            for r in mine
+            for t in r["tasks"]
+            for a in t["attempts"]
+            if a["outcome"] == SEMANTIC and a["candidate"]
+        }
+        facts[target] = {
+            "distinct_candidates_tested": len(set(tree_of.values())),
+            "novel_states_tested": len(novel),
+            "novel_states_that_broke_a_test": len(broke & novel),
+        }
+    return facts
+
+
+def _trees(git: Git, commits: list[str]) -> list[str]:
+    trees: list[str] = []
+    for i in range(0, len(commits), 400):
+        chunk = commits[i : i + 400]
+        trees.extend(git.out("rev-parse", *(f"{c}^{{tree}}" for c in chunk)).split())
+    return trees
+
+
+def build_report(
+    runs: Path, seed: int = 0, resamples: int = 2000, repos: dict[str, Path] | None = None
+) -> dict:
     records = load_runs(runs)
     rng = random.Random(seed)
     return {
         "resamples": resamples,
         "seed": seed,
         "history": history_facts(runs),
+        "novel_states": novel_states(records, repos or {}, runs),
         "policies": summarise(records, rng, resamples),
         "predictors": predictor_quality(records, rng, resamples),
     }

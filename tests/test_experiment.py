@@ -88,7 +88,11 @@ def test_run_experiment_end_to_end(repo, tmp_path):
     # Rerunning resumes: nothing left to do, nothing appended.
     run_experiment(target, [2, 4], out, tmp_path / "cache", workers=2, log=lambda m: None)
     assert len(out.read_text().splitlines()) == len(records)
-    summary = build_report(tmp_path / "runs", resamples=50)
+    summary = build_report(tmp_path / "runs", resamples=50, repos={"tiny": repo.path})
+    states = summary["novel_states"]["tiny"]
+    # Shuffled integration reaches states history never had; replayed history never breaks.
+    assert 0 < states["novel_states_tested"] <= states["distinct_candidates_tested"]
+    assert states["novel_states_that_broke_a_test"] == 0
     rows = {(r["scope"], r["size"], r["policy"]): r for r in summary["policies"]["rows"]}
     assert rows[("tiny", 2, "serial")]["first_attempt_failure"]["value"] == 0.0
     assert rows[("all", 4, "serial")]["makespan_vs_serial"]["value"] == 1.0

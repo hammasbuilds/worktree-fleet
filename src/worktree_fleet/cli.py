@@ -142,8 +142,12 @@ def cmd_experiment(args: argparse.Namespace) -> int:
 
 def cmd_report(args: argparse.Namespace) -> int:
     from .report import build_report, format_table
+    from .targets import load_targets
 
-    summary = build_report(Path(args.runs), seed=args.seed, resamples=args.resamples)
+    repos = {}
+    if Path(args.targets).exists():
+        repos = {name: t.path for name, t in load_targets(Path(args.targets)).items()}
+    summary = build_report(Path(args.runs), seed=args.seed, resamples=args.resamples, repos=repos)
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
     Path(args.out).write_text(json.dumps(summary, indent=2), encoding="utf-8")
     print(format_table(summary))
@@ -216,6 +220,7 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--out", default="results/summary.json")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--resamples", type=int, default=2000)
+    p.add_argument("--targets", default="targets.toml", help="to look up states in git")
     p.set_defaults(func=cmd_report)
     return ap
 

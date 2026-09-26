@@ -51,6 +51,8 @@ def window_counts(record: dict) -> Counts:
     c["serial_makespan"] = size
     failed_any = False
     for task in record["tasks"]:
+        if task["final"] in (ACCEPTED, NOOP):
+            c["landed"] += 1
         kind, detail = task["first_outcome"], task["first_detail"]
         if kind in (ACCEPTED, NOOP):
             continue
@@ -69,6 +71,13 @@ def window_counts(record: dict) -> Counts:
             c["rejected"] += 1
     c["window_failed"] = 1 if failed_any else 0
     return c
+
+
+def _wasted(total: Counts) -> float:
+    """Share of agent runs whose work never landed: every failed attempt, including both
+    attempts of a task that was rejected even after its redo."""
+    runs = total["agent_runs"]
+    return (runs - total["landed"]) / runs if runs else float("nan")
 
 
 def ratio(num: str, den: str) -> Callable[[Counts], float]:
@@ -117,7 +126,7 @@ METRICS: dict[str, Callable[[Counts], float]] = {
     "semantic_interaction": ratio("semantic_interaction", "tasks"),
     "semantic_stale_base": ratio("semantic_stale-base", "tasks"),
     "rejected_after_redo": ratio("rejected", "tasks"),
-    "wasted_work": ratio("redos", "agent_runs"),
+    "wasted_work": _wasted,
     "window_with_a_failure": ratio("window_failed", "windows"),
     "makespan_vs_serial": ratio("makespan", "serial_makespan"),
 }
@@ -255,3 +264,26 @@ def build_report(runs: Path, seed: int = 0, resamples: int = 2000) -> dict:
         "policies": summarise(records, rng, resamples),
         "predictors": predictor_quality(records, rng, resamples),
     }
+
+
+def format_table(summary: dict, scope: str = "all") -> str:
+    """A plain-text table of the headline metrics for one scope."""
+    head = (
+        f"{'N':>3}  {'policy':<26}{'tasks':>6}  {'1st-try fail':>13}  {'textual':>8}  "
+        f"{'semantic':>8}  {'wasted':>7}  {'makespan/N':>10}"
+    )
+    lines = [f"scope: {scope}", head, "-" * len(head)]
+    for row in summary["policies"]["rows"]:
+        if row["scope"] != scope:
+            continue
+        lines.append(
+            f"{row['size']:>3}  {row['policy']:<26}{row['tasks']:>6}  "
+            f"{_pct(row['first_attempt_failure']):>13}  {_pct(row['textual_conflict']):>8}  "
+            f"{_pct(row['semantic_conflict']):>8}  {_pct(row['wasted_work']):>7}  "
+            f"{row['makespan_vs_serial']['value']:>10.2f}"
+        )
+    return "\n".join(lines)
+
+
+def _pct(metric: dict) -> str:
+    return f"{100 * metric['value']:.1f}%"

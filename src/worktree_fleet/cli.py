@@ -141,10 +141,12 @@ def cmd_experiment(args: argparse.Namespace) -> int:
 
 
 def cmd_report(args: argparse.Namespace) -> int:
-    from .report import build_report
+    from .report import build_report, format_table
 
     summary = build_report(Path(args.runs), seed=args.seed, resamples=args.resamples)
+    Path(args.out).parent.mkdir(parents=True, exist_ok=True)
     Path(args.out).write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    print(format_table(summary))
     print(f"wrote {args.out}")
     return 0
 

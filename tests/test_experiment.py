@@ -137,7 +137,7 @@ def test_window_counts_classify_every_outcome():
     assert c["first_fail"] == 3 and c["textual"] == 2 and c["semantic"] == 1
     assert c["textual_changelog_only"] == 1 and c["textual_base"] == 1
     assert c["semantic_interaction"] == 1 and c["rejected"] == 1
-    assert c["window_failed"] == 1 and c["redos"] == 3
+    assert c["window_failed"] == 1 and c["redos"] == 3 and c["landed"] == 3
 
 
 def test_policy_labels():

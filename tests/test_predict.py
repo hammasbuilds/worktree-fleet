@@ -110,8 +110,8 @@ def _description_repo(repo):
         repo.commit(
             f"pager {n}",
             {
-                "pkg/termui.py": f"def echo_via_pager(x):\n    return x  # {n}\n\n\ndef prompt(x):\n"
-                "    return x\n",
+                "pkg/termui.py": f"def echo_via_pager(x):\n    return x  # {n}\n\n\n"
+                "def prompt(x):\n    return x\n",
                 "tests/test_termui.py": f"def test_pager():\n    pass  # {n}\n",
                 "CHANGES.rst": f"changes {n}\n",
             },

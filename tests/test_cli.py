@@ -117,3 +117,47 @@ def test_experiment_rejects_unknown_target(tmp_path):
         main(["experiment", "--targets", str(tmp_path / "t.toml"), "--target", "zzz"])
     with pytest.raises(SystemExit, match="fetch_targets"):
         main(["experiment", "--targets", str(tmp_path / "t.toml"), "--target", "a"])
+
+
+def test_run_rejects_a_python_without_pytest(repo, tmp_path):
+    base = repo.commit("base", {"a": "1"})
+    with pytest.raises(SystemExit, match="cannot run --python"):
+        main(
+            [
+                "run",
+                "--repo",
+                str(repo.path),
+                "--base",
+                base,
+                "--commits",
+                base,
+                "--python",
+                str(tmp_path / "no-such-python"),
+            ]
+        )
+
+
+def test_run_listed_order_requeues_the_dependent_task(repo, tmp_path, capsys):
+    base = repo.commit("base", {"f.txt": "1\n2\n3\n4\n"})
+    c1 = repo.commit("c1", {"f.txt": "one\n2\n3\n4\n"})
+    c2 = repo.commit("c2", {"f.txt": "one\ntwo\n3\n4\n"})
+    code = main(
+        [
+            "run",
+            "--repo",
+            str(repo.path),
+            "--base",
+            base,
+            "--commits",
+            f"{c2},{c1}",
+            "--policy",
+            "parallel",
+            "--order",
+            "listed",
+            "--workdir",
+            str(tmp_path / "w"),
+        ]
+    )
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "agent-failed -> accepted" in out

@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
 
 from .agents import Agent, ReplayAgent
-from .fleet import POLICIES, PREDICTED, Fleet, plan_waves
+from .fleet import ORDERS, POLICIES, PREDICTED, Fleet, plan_waves
 from .gitops import Git, GitError
 from .mergequeue import MergeQueue
 from .predict import PREDICTOR_NAMES, build_predictor, predicted_conflicts
@@ -49,6 +50,25 @@ def cmd_plan(args: argparse.Namespace) -> int:
     return 0
 
 
+def _usable_python(python: str) -> str:
+    """An absolute path to a python that can run pytest, or a clear error.
+
+    Tests run with each worktree as the working directory, so a relative path that works
+    from here would not be found there.
+    """
+    candidate = Path(python)
+    resolved = str(candidate.resolve()) if candidate.exists() else python
+    try:
+        proc = subprocess.run(
+            [resolved, "-m", "pytest", "--version"], capture_output=True, text=True, timeout=120
+        )
+    except OSError as exc:
+        raise SystemExit(f"fleet: cannot run --python {python!r}: {exc}") from exc
+    if proc.returncode != 0:
+        raise SystemExit(f"fleet: {python!r} runs, but has no pytest: {proc.stderr.strip()[:200]}")
+    return resolved
+
+
 def cmd_run(args: argparse.Namespace) -> int:
     git = Git(args.repo)
     tasks = _tasks_from_args(args, git)
@@ -56,7 +76,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     runner = None
     if args.python:
         config = SuiteConfig(
-            python=args.python,
+            python=_usable_python(args.python),
             args=args.pytest_args.split() if args.pytest_args else [],
             pythonpath=args.pythonpath.split(",") if args.pythonpath else [],
             timeout=args.timeout,
@@ -78,6 +98,8 @@ def cmd_run(args: argparse.Namespace) -> int:
         max_workers=args.workers,
         retries=args.retries,
         keep_worktrees=args.keep_worktrees,
+        order=args.order,
+        seed=args.seed,
     )
     predictor = build_predictor(args.predictor, git) if args.policy == PREDICTED else None
     try:
@@ -190,6 +212,14 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--workdir", help="where agent worktrees go (default: a temp dir)")
     p.add_argument("--workers", type=int, default=4, help="agents running at once")
     p.add_argument("--retries", type=int, default=1, help="redos per failed task")
+    p.add_argument(
+        "--order",
+        default="completion",
+        choices=ORDERS,
+        help="integration order within a wave: as agents finish (default), as listed, or a "
+        "seeded shuffle",
+    )
+    p.add_argument("--seed", type=int, default=0, help="seed for --order shuffled")
     p.add_argument("--run-id", default="run", help="names refs/fleet/<run-id>/...")
     p.add_argument("--keep-worktrees", action="store_true")
     p.add_argument("--json", help="also write the full report here")

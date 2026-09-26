@@ -105,9 +105,18 @@ def cmd_run(args: argparse.Namespace) -> int:
 
 
 def cmd_experiment(args: argparse.Namespace) -> int:
-    from .experiment import run_experiment
+    from .experiment import parse_specs, run_experiment
     from .targets import load_targets
 
+    specs = parse_specs(args.policies) if args.policies else None
+    agent_spec = None
+    if args.agent == "ollama":
+        agent_spec = {
+            "kind": "ollama",
+            "url": args.ollama_url,
+            "model": args.model,
+            "cache": str(Path(args.llm_cache).resolve()),
+        }
     targets = load_targets(Path(args.targets))
     names = args.target or sorted(targets)
     for name in names:
@@ -124,6 +133,9 @@ def cmd_experiment(args: argparse.Namespace) -> int:
             Path(args.cache),
             workers=args.workers,
             max_windows=args.max_windows,
+            specs=specs,
+            agent_spec=agent_spec,
+            dry_run=args.dry_run,
         )
     return 0
 
@@ -185,6 +197,16 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--max-windows", type=int, help="cap windows per size (for a quick look)")
     p.add_argument("--out", default="results/runs")
     p.add_argument("--cache", default="targets/.fleet")
+    p.add_argument(
+        "--policies",
+        help="comma-separated subset, e.g. serial,parallel,predicted:description "
+        "(default: all six headline policies)",
+    )
+    p.add_argument("--agent", default="replay", choices=("replay", "ollama"))
+    p.add_argument("--model", default="qwen2.5-coder:14b")
+    p.add_argument("--ollama-url", default="http://127.0.0.1:11434")
+    p.add_argument("--llm-cache", default="results/llm-cache")
+    p.add_argument("--dry-run", action="store_true", help="print the job list, run nothing")
     p.set_defaults(func=cmd_experiment)
 
     p = sub.add_parser("report", help="aggregate experiment runs into results/summary.json")

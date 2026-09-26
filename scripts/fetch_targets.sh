@@ -12,8 +12,9 @@ cd "$(dirname "$0")/.."
 # name | url | branch | pinned head | first-parent commits needed
 TARGETS=(
   "flask|https://github.com/pallets/flask.git|main|d73fa1cdcbd8b1465c151db8924ba58b1dd14e35|400"
-  "requests|https://github.com/psf/requests.git|main|dae7ef63b4df6eded86637f251fc4e3a06c3b479|400"
   "sqlparse|https://github.com/andialbrecht/sqlparse.git|master|60cdc649726bf1bc4f1b336050560b336da715ec|400"
+  "click|https://github.com/pallets/click.git|main|06b2a678741131fd577ce170e23e5ca0aeba0309|400"
+  "more-itertools|https://github.com/more-itertools/more-itertools.git|master|fbb9a98d8c7b914fcc952afd4976c1bc8deebe87|400"
 )
 
 retry() {
@@ -41,7 +42,10 @@ fetch_one() {
   if ! git -C "$dir" rev-parse -q --verify FETCH_HEAD >/dev/null; then
     retry git -C "$dir" fetch -q --no-tags --depth 25 "$url" "$branch" || return 1
   fi
-  while [ "$(git -C "$dir" rev-list --first-parent --count FETCH_HEAD)" -le "$need" ]; do
+  # Deepen until the pinned commit is present with `need` first-parent commits behind it
+  # (the branch tip may have moved past the pin since the results were produced).
+  while ! git -C "$dir" cat-file -e "$pin^{commit}" 2>/dev/null \
+    || [ "$(git -C "$dir" rev-list --first-parent --count "$pin")" -le "$need" ]; do
     local before
     before=$(git -C "$dir" rev-list --count FETCH_HEAD)
     retry git -C "$dir" fetch -q --no-tags --deepen 60 "$url" "$branch" || return 1

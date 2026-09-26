@@ -14,6 +14,7 @@ from collections import defaultdict
 from collections.abc import Callable, Iterable
 from pathlib import Path
 
+from .experiment import spec_label
 from .fleet import NOOP
 from .mergequeue import ACCEPTED, AGENT_FAILED, SEMANTIC, TEXTUAL
 
@@ -34,12 +35,8 @@ def load_runs(runs: Path) -> list[dict]:
 
 
 def policy_key(record: dict) -> str:
-    """A label per (policy, predictor, order). Plain `parallel` is the shuffled headline run."""
-    if record["policy"] == "predicted":
-        return f"predicted:{record['predictor']}"
-    if record["policy"] == "parallel" and record.get("order") == "listed":
-        return "parallel:history-order"
-    return record["policy"]
+    """The record's policy label (plain `parallel` is the shuffled headline run)."""
+    return spec_label((record["policy"], record.get("predictor"), record.get("order", "shuffled")))
 
 
 def window_counts(record: dict) -> Counts:

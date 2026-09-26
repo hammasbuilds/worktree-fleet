@@ -55,6 +55,31 @@ POLICY_SPECS: list[Spec] = [
 ]
 
 
+def spec_label(spec: Spec) -> str:
+    """The name a spec goes by on the command line and in the report."""
+    policy, predictor, order = spec
+    if policy == PREDICTED:
+        return f"predicted:{predictor}"
+    if policy == PARALLEL and order == "listed":
+        return "parallel:history-order"
+    return policy
+
+
+SPECS_BY_LABEL: dict[str, Spec] = {
+    spec_label(s): s for s in [*POLICY_SPECS, (PREDICTED, "description-spans", "shuffled")]
+}
+
+
+def parse_specs(text: str) -> list[Spec]:
+    """Comma-separated labels, e.g. "serial,parallel,predicted:description"."""
+    specs = []
+    for label in (part.strip() for part in text.split(",") if part.strip()):
+        if label not in SPECS_BY_LABEL:
+            raise ValueError(f"unknown policy {label!r}; choose from {', '.join(SPECS_BY_LABEL)}")
+        specs.append(SPECS_BY_LABEL[label])
+    return specs
+
+
 @dataclass(frozen=True)
 class Window:
     size: int
@@ -272,10 +297,13 @@ def run_experiment(
     specs: list[Spec] | None = None,
     agent_spec: dict | None = None,
     log=None,
+    dry_run: bool = False,
 ) -> Path:
     """Run every window of every size for one target; append records to `out` (JSONL).
 
-    Windows already present in `out` are skipped, so an interrupted run resumes.
+    Windows already present in `out` are skipped, so an interrupted run resumes. With
+    `dry_run`, nothing is tested or run: windows are planned from cached test results only
+    and the job list and an agent-call estimate are printed.
     """
     log = log or _log
     git = Git(target.path)
@@ -288,8 +316,16 @@ def run_experiment(
     head = git.rev_parse(target.ref)
     commits = history_commits(git, head, target.history)
     bases = [git.parents(c)[0] for c in commits]
-    log(f"[{target.name}] {len(commits)} task commits; testing each (cached by tree)")
-    results = precompute(target, bases + commits, cache, work, workers)
+    if dry_run:
+        runner = SuiteRunner(git, target.suite(), cache)
+        results = {c: r for c in bases + commits if (r := runner.cached(git.tree_of(c)))}
+        log(
+            f"[{target.name}] dry run: {len(results)}/{len(set(bases + commits))} commits "
+            "have cached test results (run the replay experiment first to fill the rest)"
+        )
+    else:
+        log(f"[{target.name}] {len(commits)} task commits; testing each (cached by tree)")
+        results = precompute(target, bases + commits, cache, work, workers)
     healthy_count = sum(healthy(results[c]) for c in commits)
     log(f"[{target.name}] {healthy_count}/{len(commits)} commits test healthy")
     windows = make_windows(git, commits, sizes, results)
@@ -298,6 +334,16 @@ def run_experiment(
     done = _done_windows(out, len(specs or POLICY_SPECS))
     todo = [w for w in windows if (target.name, w.size, w.index) not in done]
     log(f"[{target.name}] {len(windows)} eligible windows, {len(todo)} still to run")
+    if dry_run:
+        runs = len(specs or POLICY_SPECS)
+        tasks = sum(w.size for w in todo)
+        for w in todo:
+            log(f"  job: N={w.size} window #{w.index} base {w.base[:10]}, {runs} policies")
+        log(
+            f"[{target.name}] agent calls: {tasks * runs} first attempts, at most "
+            f"{2 * tasks * runs} with one redo each"
+        )
+        return out
     flaky = set().union(*(r.flaky for r in results.values())) if results else set()
     out.parent.mkdir(parents=True, exist_ok=True)
     with ProcessPoolExecutor(max_workers=workers) as pool:

@@ -139,7 +139,8 @@ def test_window_counts_classify_every_outcome():
         )
     )
     assert c["first_fail"] == 3 and c["textual"] == 2 and c["semantic"] == 1
-    assert c["textual_changelog_only"] == 1 and c["textual_base"] == 1
+    assert c["textual_files_changelog"] == 1 and c["textual_files_code"] == 1
+    assert c["textual_base"] == 1
     assert c["semantic_interaction"] == 1 and c["rejected"] == 1
     assert c["window_failed"] == 1 and c["redos"] == 3 and c["landed"] == 3
 
@@ -174,3 +175,12 @@ def test_load_targets(tmp_path):
     target = load_targets(tmp_path / "targets.toml")["demo"]
     assert target.path == tmp_path / "t" / "demo"
     assert target.suite().pythonpath == ["src"] and target.history == 50
+
+
+def test_conflict_kind():
+    from worktree_fleet.report import conflict_kind
+
+    assert conflict_kind(["CHANGES.rst", "src/a.py"]) == "code"
+    assert conflict_kind(["CHANGES.rst", "docs/CHANGELOG.md"]) == "changelog"
+    assert conflict_kind([".github/workflows/tests.yaml", "uv.lock"]) == "other"
+    assert conflict_kind([]) == "other"

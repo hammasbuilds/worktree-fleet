@@ -60,9 +60,7 @@ def window_counts(record: dict) -> Counts:
         if kind in (TEXTUAL, AGENT_FAILED):
             c["textual"] += 1
             c[f"textual_{detail}"] += 1
-            conflicted = task["attempts"][0]["conflicted"]
-            if conflicted and all(CHANGELOG.search(p) for p in conflicted):
-                c["textual_changelog_only"] += 1
+            c[f"textual_files_{conflict_kind(task['attempts'][0]['conflicted'])}"] += 1
         elif kind == SEMANTIC:
             c["semantic"] += 1
             c[f"semantic_{detail}"] += 1
@@ -77,6 +75,16 @@ def _wasted(total: Counts) -> float:
     attempts of a task that was rejected even after its redo."""
     runs = total["agent_runs"]
     return (runs - total["landed"]) / runs if runs else float("nan")
+
+
+def conflict_kind(paths: list[str]) -> str:
+    """What a conflict was about: any Python file makes it `code`; otherwise `changelog`
+    if every file is a changelog, else `other` (CI, dependency pins, lock files, docs)."""
+    if any(p.endswith(".py") for p in paths):
+        return "code"
+    if paths and all(CHANGELOG.search(p) for p in paths):
+        return "changelog"
+    return "other"
 
 
 def ratio(num: str, den: str) -> Callable[[Counts], float]:
@@ -121,6 +129,9 @@ def bootstrap(
 METRICS: dict[str, Callable[[Counts], float]] = {
     "first_attempt_failure": ratio("first_fail", "tasks"),
     "textual_conflict": ratio("textual", "tasks"),
+    "textual_in_code": ratio("textual_files_code", "tasks"),
+    "textual_changelog_only": ratio("textual_files_changelog", "tasks"),
+    "textual_other_files": ratio("textual_files_other", "tasks"),
     "semantic_conflict": ratio("semantic", "tasks"),
     "semantic_interaction": ratio("semantic_interaction", "tasks"),
     "semantic_stale_base": ratio("semantic_stale-base", "tasks"),

@@ -110,21 +110,38 @@ def bootstrap(
     resamples: int,
 ) -> dict[str, float]:
     """Point estimate and 95% percentile interval, resampling windows within each stratum."""
-    point = stat(_sum(c for items in strata.values() for c in items))
-    draws = []
+    return bootstrap_many(strata, {"x": stat}, rng, resamples)["x"]
+
+
+def bootstrap_many(
+    strata: dict[str, list[Counts]],
+    stats: dict[str, Callable[[Counts], float]],
+    rng: random.Random,
+    resamples: int,
+) -> dict[str, dict[str, float]]:
+    """`bootstrap` for several statistics over the *same* resamples of windows."""
+    point = _sum(c for items in strata.values() for c in items)
+    draws: dict[str, list[float]] = {name: [] for name in stats}
     for _ in range(resamples):
         sample: list[Counts] = []
         for items in strata.values():
             sample.extend(rng.choice(items) for _ in items)
-        value = stat(_sum(sample))
-        if value == value:  # drop NaN (empty denominator in this resample)
-            draws.append(value)
-    draws.sort()
-    if not draws:
-        return {"value": point, "lo": float("nan"), "hi": float("nan")}
-    lo = draws[int(0.025 * (len(draws) - 1))]
-    hi = draws[int(0.975 * (len(draws) - 1))]
-    return {"value": round(point, 4), "lo": round(lo, 4), "hi": round(hi, 4)}
+        total = _sum(sample)
+        for name, stat in stats.items():
+            value = stat(total)
+            if value == value:  # drop NaN (empty denominator in this resample)
+                draws[name].append(value)
+    out = {}
+    for name, stat in stats.items():
+        values = sorted(draws[name])
+        estimate = stat(point)
+        if not values:
+            out[name] = {"value": estimate, "lo": float("nan"), "hi": float("nan")}
+            continue
+        lo = values[int(0.025 * (len(values) - 1))]
+        hi = values[int(0.975 * (len(values) - 1))]
+        out[name] = {"value": round(estimate, 4), "lo": round(lo, 4), "hi": round(hi, 4)}
+    return out
 
 
 METRICS: dict[str, Callable[[Counts], float]] = {
@@ -170,8 +187,7 @@ def summarise(records: list[dict], rng: random.Random, resamples: int) -> dict:
                     "tasks": int(total["tasks"]),
                     "counts": {k: int(v) for k, v in sorted(total.items())},
                 }
-                for name, stat in METRICS.items():
-                    row[name] = bootstrap(strata, stat, rng, resamples)
+                row.update(bootstrap_many(strata, METRICS, rng, resamples))
                 out["rows"].append(row)
     return out
 
@@ -211,10 +227,15 @@ def predictor_quality(records: list[dict], rng: random.Random, resamples: int) -
         for scope in [*sorted(strata), "all"]:
             s = strata if scope == "all" else {scope: strata[scope]}
             result[label][scope] = {
-                "task_precision": bootstrap(s, _prec("tp", "fp"), rng, resamples),
-                "task_recall": bootstrap(s, _prec("tp", "fn"), rng, resamples),
-                "pairs_flagged_share": bootstrap(
-                    s, ratio("pairs_flagged", "pairs_total"), rng, resamples
+                **bootstrap_many(
+                    s,
+                    {
+                        "task_precision": _prec("tp", "fp"),
+                        "task_recall": _prec("tp", "fn"),
+                        "pairs_flagged_share": ratio("pairs_flagged", "pairs_total"),
+                    },
+                    rng,
+                    resamples,
                 ),
                 "counts": {
                     k: int(v) for k, v in sorted(_sum(x for v in s.values() for x in v).items())
@@ -343,7 +364,7 @@ def build_report(
 def format_table(summary: dict, scope: str = "all") -> str:
     """A plain-text table of the headline metrics for one scope."""
     head = (
-        f"{'N':>3}  {'policy':<26}{'tasks':>6}  {'1st-try fail':>13}  {'textual':>8}  "
+        f"{'N':>3}  {'policy':<40}{'tasks':>6}  {'1st-try fail':>13}  {'textual':>8}  "
         f"{'semantic':>8}  {'wasted':>7}  {'makespan/N':>10}"
     )
     lines = [f"scope: {scope}", head, "-" * len(head)]
@@ -351,7 +372,7 @@ def format_table(summary: dict, scope: str = "all") -> str:
         if row["scope"] != scope:
             continue
         lines.append(
-            f"{row['size']:>3}  {row['policy']:<26}{row['tasks']:>6}  "
+            f"{row['size']:>3}  {row['policy']:<40}{row['tasks']:>6}  "
             f"{_pct(row['first_attempt_failure']):>13}  {_pct(row['textual_conflict']):>8}  "
             f"{_pct(row['semantic_conflict']):>8}  {_pct(row['wasted_work']):>7}  "
             f"{row['makespan_vs_serial']['value']:>10.2f}"

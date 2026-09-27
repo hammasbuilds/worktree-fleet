@@ -7,8 +7,8 @@ LLM-agent arm is built, tested with a fake client, and queued (`scripts/run_mode
 
 | Points | Criterion | Score | Reason |
 |---:|---|---:|---|
-| 15 | Works from a clean clone | 15 | Fresh `git clone` into a temp dir: `uv sync --offline`, `uv run pytest -q` (69 passed), `uv run python demo.py` all succeed. Tests build their own git repos in `tmp_path`, use no network, no model, no data env vars. |
-| 20 | Real data, real result | 19 | Five real histories (flask in two eras, click, sqlparse, more-itertools), every merge candidate tested with the project's own suite; `results/runs/*.jsonl` + `results/summary.json`. -1: flask contributes only the commits whose suite runs in one environment per era. |
+| 15 | Works from a clean clone | 15 | Fresh `git clone` into a temp dir: `uv sync --offline`, `uv run pytest -q` (70 passed), `uv run python demo.py` all succeed. Tests build their own git repos in `tmp_path`, use no network, no model, no data env vars. |
+| 20 | Real data, real result | 19 | Five real histories (flask in two eras, click, sqlparse, more-itertools), 591 windows (3,542 task placements per policy), every merge candidate tested with the project's own suite; `results/runs/*.jsonl` + `results/summary.json`. -1: flask contributes only the commits whose suite runs in one environment per era (146/396 and 71/298). |
 | 15 | Finding quality | 14 | Baselines (serial, naive parallel, history order), ablations (changelog union driver, four predictors at three information levels), window-level stratified bootstrap CIs, per-repo split, attribution against base and every real commit, novel-state denominator for semantic conflicts. -1: replay cannot generate interaction conflicts that history did not contain (stated). |
 | 15 | Correctness | 14 | Every surprising number was chased (spurious `<suite-error>` "conflicts", degenerate pairwise truth, zero semantic conflicts in history order, flask 2.x failing everywhere, the more-itertools SyntaxError). -1: one-environment-per-era is a coarse way to get green history. |
 | 10 | Usability | 9 | `fleet plan/run/experiment/report` with `--help`, one-line errors, `--python` validated up front, resumable experiment, dry-run for the model arm. -1: running the experiment needs two setup scripts and hours. |
@@ -68,3 +68,23 @@ uv run pytest -q && uv run python demo.py
 
 The README's `fleet plan` / `fleet run` samples are the exact commands shown in its Input /
 Output section, run from the repository root.
+
+The runs in `results/runs/` were produced from a frozen snapshot at commit `f755a7d`. Later
+commits changed the report (shared resamples, file-kind breakdown, novel-state count), the CLI
+(`--order`, `--python` validation), crash handling for agents, and dropped a per-window pairwise
+field the report no longer reads; the fleet, queue, replay and attribution logic the runs used
+is unchanged. `fleet report` regenerates `results/summary.json` from those runs.
+
+## Headline numbers (pooled, naive parallel, 95% window-bootstrap CI)
+
+| N | first attempt thrown away | with changelog union | clean merge, broken tests | wall-clock vs serial |
+|---:|---|---|---|---|
+| 2 | 9.0% [6.4, 11.8] | 6.4% | 0.0% | 0.59 |
+| 4 | 18.7% [15.9, 21.5] | 12.3% | 0.3% | 0.44 |
+| 8 | 31.4% [28.5, 34.1] | 21.9% | 0.9% | 0.44 |
+| 16 | 42.5% [39.1, 46.1] | 30.5% | 1.1% | 0.49 |
+
+Exact-line oracle at N=16: 0.5% thrown away at 0.43 wall-clock; the realistic description
+predictor: 1.0% at 0.97 (it serialises on the changelog), 15.4% at 0.71 with the changelog on
+`merge=union`. 6,339 never-seen states tested, 81 broke a test, from 22 changes: 20 stale-base,
+one interaction pair (a clean git merge that produced a SyntaxError).

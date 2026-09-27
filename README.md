@@ -53,16 +53,16 @@ real repository, start all N "agents" from the same base as if they had been lau
 and let each one produce the change that really happened. Then integrate them and count.
 
 > **Parallel agents mostly collide over files nobody would describe in a task: changelogs, CI
-> configuration and lock files. On five real histories, at 16 agents, 42% of first attempts had
-> to be thrown away and fewer than a third of those collisions touched a single line of Python.
-> A clean merge that breaks the tests was rare (1.1%), and every one of the 81 broken states the
-> test gate caught was a dependency, never an interaction.**
+> configuration and lock files. On five real histories, at 16 agents, 42.5% of first attempts had
+> to be thrown away, and only a third of those collisions touched a line of Python. A clean merge
+> that breaks the tests was rare (1.1%): the test gate caught 81 broken states from 22 changes,
+> and 20 of those changes were plain dependencies - a test landing before the code it tests.**
 
 ## Findings
 
 Five target histories: [flask](https://github.com/pallets/flask) (two eras, two test
 environments), [click](https://github.com/pallets/click), [sqlparse](https://github.com/andialbrecht/sqlparse)
-and [more-itertools](https://github.com/more-itertools/more-itertools). Up to 40 non-overlapping
+and [more-itertools](https://github.com/more-itertools/more-itertools): 591 windows in all, up to 40 non-overlapping
 windows per fleet size per repository, every window run under eight policies, every merge
 candidate tested with the repository's own suite. 95% intervals are bootstrap over *windows*
 (tasks in one window are not independent), stratified by repository.
@@ -70,10 +70,10 @@ All numbers: `results/summary.json`.
 
 | agents N | first attempt thrown away (naive parallel) | ...of which touching `.py` | with changelogs on `merge=union` | clean merge, broken tests | agent work wasted | wall-clock vs serial |
 |---:|---|---|---|---|---|---|
-| 2 | **9.7%** [6.9, 12.8] | 3.8% | 6.9% | 0.0% | 8.8% | 0.60 |
-| 4 | **18.8%** [15.8, 21.9] | 5.7% | 12.1% | 0.3% | 17.5% | 0.44 |
-| 8 | **31.7%** [28.6, 34.6] | 10.3% | 22.0% | 0.9% | 30.4% | 0.44 |
-| 16 | **42.5%** [39.1, 45.7] | 13.8% | 30.3% | 1.1% | 43.0% | 0.49 |
+| 2 | **9.0%** [6.4, 11.8] | 3.6% | 6.4% | 0.0% | 8.2% | 0.59 |
+| 4 | **18.7%** [15.9, 21.5] | 5.9% | 12.3% | 0.3% | 17.2% | 0.44 |
+| 8 | **31.4%** [28.5, 34.1] | 10.2% | 21.9% | 0.9% | 30.1% | 0.44 |
+| 16 | **42.5%** [39.1, 46.1] | 13.7% | 30.5% | 1.1% | 43.0% | 0.49 |
 
 Wall-clock is makespan in agent rounds (one per wave, plus one per redo) divided by N; serial is
 1.00. Past N=8 naive parallelism stops getting faster: every extra agent adds more redos than
@@ -84,10 +84,10 @@ it saves rounds.
 | predictor (what it knows before agents start) | N=16: thrown away | wall-clock vs serial | task precision | task recall | pairs held apart |
 |---|---|---|---|---|---|
 | none (naive parallel) | 42.5% | 0.49 | - | - | 0% |
-| task text + repo + prior history (`description`) | 1.0% | **0.97** | 37.8% | 97.3% | 95.3% |
-| same, changelogs on `merge=union` | 14.8% | 0.72 | 25.1% | 49.2% | 47.2% |
-| exact files of the real change (oracle) | 0.5% | 0.55 | 52.9% | 99.2% | 38.6% |
-| exact lines of the real change (oracle) | **0.5%** | **0.43** | 77.0% | 98.6% | 26.0% |
+| task text + repo + prior history (`description`) | 1.0% | **0.97** | 37.2% | 97.4% | 95.5% |
+| same, changelogs on `merge=union` | 15.4% | 0.71 | 25.1% | 47.1% | 45.1% |
+| exact files of the real change (oracle) | 0.4% | 0.55 | 52.6% | 99.3% | 38.3% |
+| exact lines of the real change (oracle) | **0.5%** | **0.43** | 77.3% | 98.7% | 25.8% |
 
 - **The realistic predictor cannot tell.** From the task text it either claims the changelog
   (which nearly every change touches) and so serialises almost everything - wall-clock 0.97,
@@ -99,22 +99,32 @@ it saves rounds.
   ceiling, not a method.
 - **Oracle recall of ~99% is structural, not skill.** In replayed history every collision is a
   change that edits lines another in-flight task changed, so any footprint containing the real
-  files flags it. The misses are exactly the semantic cases below, which share no file at all.
-  Precision is the informative number: how much parallelism each predictor gives up.
+  files flags it. Of the exact-line oracle's 14 misses, 12 are semantic failures below, which
+  share no file with what they depend on. Precision is the informative number: how much
+  parallelism each predictor gives up to get there.
 
 **Semantic conflicts.** A replay integrated in history's own order cannot produce one - each
 intermediate main is byte-identical to a real, passing commit - so the headline runs integrate
-each wave in a seeded shuffle, like agents finishing in any order. Of 6,040 merge candidates the
+each wave in a seeded shuffle, like agents finishing in any order. Of 6,339 merge candidates the
 queue tested that history never contained, 81 broke a test that passed on main and on the task's
-real commit. **All 81 were `stale-base`**: the task's change needed another in-flight task's
-change (a test-only commit landing before the code it tests, a benchmark test landing before
-the speed-up). **Zero** were interactions - two changes that each pass alone but break together.
+real commit. They came from 22 distinct changes:
+
+- **20 were `stale-base`**: the change failed its own tests on its branch alone, because it needed
+  another in-flight change - a test-only commit landing before the code it tests, a benchmark
+  test landing before the speed-up it checks. No overlap predictor sees these: the two changes
+  share no file.
+- **2 were one genuine interaction** (more-itertools `d17d077` adds `chunked_even`, `6ccc5d7`
+  rewrites its docstring). Replayed onto a base without the function, the docstring edit made
+  git's three-way merge rebuild a copy of it; merged with the real addition, git reported a clean
+  merge and produced a `SyntaxError` - an unterminated docstring. Each branch passed its tests
+  alone.
 
 **Per repository** (N=16, naive parallel):
 
 | repo | windows | thrown away | touching `.py` | changelog only | other files | broken tests |
 |---|---:|---|---|---|---|---|
 | flask (Werkzeug 3 era) | 7 | 59.8% | 8.0% | 10.7% | 41.1% | 0.0% |
+| flask (Werkzeug 2 era) | 3 | 41.7% | 12.5% | 6.2% | 22.9% | 0.0% |
 | click | 24 | 54.4% | 10.9% | 22.4% | 21.1% | 0.0% |
 | sqlparse | 24 | 45.1% | 18.0% | 16.2% | 10.2% | 0.8% |
 | more-itertools | 25 | 23.8% | 14.0% | 0.0% | 7.0% | 2.8% |
@@ -210,19 +220,23 @@ predicted: 2 wave(s), makespan 4, 6 agent runs
 
 *Both known answers come out. The predictor separates the README edits, and then the second
 one still cannot apply: separating two tasks that edit the same line only moves the conflict.
-It also cannot see the rename: that is the interaction case, which real history never produced.*
+It also cannot see the rename: an interaction shares no line, so no overlap predictor can.*
 
-**5 · The aggregate** (`fleet report`, first rows of the pooled table):
+**5 · The aggregate** (`fleet report`, the N=16 rows of the pooled table; the whole table is
+in `results/report_table.txt`):
 
 ```console
 scope: all
-  N  policy                     tasks   1st-try fail   textual  semantic   wasted  makespan/N
----------------------------------------------------------------------------------------------
- 16  parallel                    1280          42.5%     41.4%      1.1%    43.0%        0.49
- 16  parallel+changelog-union    1280          30.3%     29.1%      1.2%    30.9%        0.37
- 16  predicted:description       1280           1.0%      1.0%      0.0%     1.2%        0.97
- 16  predicted:oracle-hunks      1280           0.5%      0.0%      0.5%     0.7%        0.43
- 16  serial                      1280           0.0%      0.0%      0.0%     0.0%        1.00
+  N  policy                                   tasks   1st-try fail   textual  semantic   wasted  makespan/N
+-----------------------------------------------------------------------------------------------------------
+ 16  parallel                                  1328          42.5%     41.4%      1.1%    43.0%        0.49
+ 16  parallel+changelog-union                  1328          30.5%     29.4%      1.1%    31.0%        0.37
+ 16  parallel:history-order                    1328          42.3%     41.4%      0.9%    30.0%        0.49
+ 16  predicted:description                     1328           1.0%      1.0%      0.0%     1.2%        0.97
+ 16  predicted:description+changelog-union     1328          15.4%     15.2%      0.1%    19.2%        0.71
+ 16  predicted:oracle-files                    1328           0.4%      0.1%      0.4%     0.8%        0.55
+ 16  predicted:oracle-hunks                    1328           0.5%      0.0%      0.5%     0.7%        0.43
+ 16  serial                                    1328           0.0%      0.0%      0.0%     0.0%        1.00
 ```
 
 ## How the measurement works
@@ -254,7 +268,7 @@ git clone https://github.com/hammasbuilds/worktree-fleet
 cd worktree-fleet
 uv sync
 
-uv run pytest -q              # 69 tests, no network, no model
+uv run pytest -q              # 70 tests, no network, no model
 uv run python demo.py         # the four known-answer tasks above
 
 # your own repository: tasks from a JSON list, agents in worktrees, test gate on
@@ -310,7 +324,7 @@ the test suite and the demo need neither.
 uv run pytest -q
 ```
 
-69 tests, all against throwaway git repositories built in `tmp_path`, running real `git` and a
+70 tests, all against throwaway git repositories built in `tmp_path`, running real `git` and a
 real nested `pytest`. They cover diff parsing, the in-memory merge and replay, the adjacency rule
 git uses for conflicts (the hunk predictor is checked never to miss a conflict git reports on
 random edits), flaky and incomplete test runs, the semantic gate, the ignore set, re-queueing,
@@ -326,14 +340,15 @@ end on a small history.
   mistakes of its own. The model arm is built and queued for that.
 - **Replay cannot create interaction conflicts from nothing.** Each real change was written
   knowing about the ones before it, so two independent changes that break each other only appear
-  if history happened to contain them. Zero interactions is a result about these histories, not
-  proof that fleets never produce them.
+  if history happened to contain them. One interaction pair in 6,339 novel states is a result
+  about these histories, not a rate for fleets of independent agents.
 - **A task is a commit, not a PR.** sqlparse's maintainer commits straight to `master`, so one
   feature split over consecutive commits (code, then its tests) becomes two dependent tasks. This
   inflates sqlparse's stale-base count.
 - **Five histories, one language.** All Python, all pytest, all small-to-medium libraries.
   flask contributes only the commits whose suite runs in one environment per era: 146 of 396 in
-  the Werkzeug 3 era and the Werkzeug 2 era is a separate target.
+  the Werkzeug 3 era, 71 of 298 in the Werkzeug 2 era (a separate target with its own
+  environment).
 - **Wall-clock is counted in agent rounds**, not seconds, and a redo is charged a full round.
 
 ## Problems hit while building this
@@ -363,7 +378,7 @@ end on a small history.
 - **History-order replay can only reproduce history.** With merges clean, each intermediate main
   equals a real commit, which passes by construction - the test gate can never fire. Integration
   order is now a seeded shuffle, and the report counts how many never-seen states were actually
-  tested (6,040), so "no semantic conflicts" has a denominator.
+  tested (6,339), so the semantic-conflict rate has a real denominator.
 - **Retrying immediately retried too early.** A dependent task that failed was redone at once -
   before the task it depended on had landed - and failed again. Failed tasks now go to the back of
   their wave, as a merge queue re-queues a PR.

@@ -15,10 +15,15 @@ from pathlib import Path
 from .gitops import Git
 from .suite import SuiteRunner
 
+# Outcomes of one attempt at a task, from the agent through the queue.
 ACCEPTED = "accepted"
-TEXTUAL = "textual"
-SEMANTIC = "semantic"
-AGENT_FAILED = "agent-failed"
+TEXTUAL = "textual"  # the queue's three-way merge conflicted
+SEMANTIC = "semantic"  # the merge was clean, the merged tree broke a test
+# The agent could not produce its change on this base: it edits lines the base does not have
+# (a replayed change that was written on top of other in-flight work).
+BASE_CONFLICT = "base-conflict"
+# The agent failed on its own: no usable edits, a crash. Not a conflict of any kind.
+AGENT_ERROR = "agent-error"
 
 
 @dataclass
@@ -71,7 +76,10 @@ class MergeQueue:
         candidate = self.git.commit_tree(merged.tree, [self.main, branch], f"fleet: merge {label}")
         failures: set[str] = set()
         if self.runner is not None and self.worktree is not None:
-            result = self.runner.result(candidate, self.worktree)
+            # Failures already accepted on main or known broken/flaky cannot be blamed on this
+            # candidate, so they need no confirming rerun; anything else is rerun first.
+            expected = self.main_failures | self.ignore | self.flaky
+            result = self.runner.result(candidate, self.worktree, expected=expected)
             self.test_runs += 1
             self.flaky |= result.flaky
             failures = set(result.failed)

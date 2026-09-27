@@ -135,9 +135,6 @@ class Git:
     def message(self, commit: str) -> str:
         return self.out("log", "-1", "--format=%B", commit)
 
-    def author(self, commit: str) -> str:
-        return self.out("log", "-1", "--format=%an", commit)
-
     def commit_tree(self, tree: str, parents: list[str], message: str) -> str:
         args = ["commit-tree", tree]
         for parent in parents:
@@ -146,12 +143,6 @@ class Git:
 
     def update_ref(self, ref: str, commit: str) -> None:
         self.run("update-ref", ref, commit)
-
-    def delete_ref(self, ref: str) -> None:
-        self.run("update-ref", "-d", ref, check=False)
-
-    def merge_base(self, a: str, b: str) -> str:
-        return self.out("merge-base", a, b)
 
     # --- merging --------------------------------------------------------------------
 
@@ -190,15 +181,6 @@ class Git:
         """Zero-context hunks from `a` to `b`, keyed by path, in `a`'s line numbers."""
         text = self.run("diff", "-U0", "--no-color", "--no-ext-diff", "--no-renames", a, b).stdout
         return parse_unified_diff(text)
-
-    def diff_text(self, a: str, b: str, context: int = 3) -> str:
-        return self.run(
-            "diff", f"-U{context}", "--no-color", "--no-ext-diff", "--no-renames", a, b
-        ).stdout
-
-    def show_file(self, rev: str, path: str) -> str | None:
-        proc = self.run("show", f"{rev}:{path}", check=False)
-        return proc.stdout if proc.returncode == 0 else None
 
     def ls_files(self, rev: str) -> list[str]:
         text = self.out("ls-tree", "-r", "--name-only", rev)

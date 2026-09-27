@@ -97,44 +97,19 @@ def test_run_with_tasks_file_and_test_gate(repo, tmp_path, capsys, suite_config)
     assert "semantic" in out and "broke: test_t::test_t" in out
 
 
-def test_errors_are_one_line_messages(repo, tmp_path, capsys):
-    repo.commit("base", {"a": "1"})
-    assert main(["plan", "--repo", str(repo.path), "--commits", "nope"]) == 2
-    assert "fleet:" in capsys.readouterr().err
-    bad = tmp_path / "bad.json"
-    bad.write_text("{}")
-    assert main(["plan", "--repo", str(repo.path), "--tasks", str(bad)]) == 2
-    assert "expected a JSON list" in capsys.readouterr().err
-    with pytest.raises(SystemExit, match="--tasks"):
-        main(["plan", "--repo", str(repo.path)])
-
-
 def test_experiment_rejects_unknown_target(tmp_path):
     (tmp_path / "t.toml").write_text(
         '[targets.a]\nurl = "u"\npath = "a"\nref = "r"\nhistory = 5\nvenv = "v"\n'
     )
-    with pytest.raises(SystemExit, match="unknown target"):
-        main(["experiment", "--targets", str(tmp_path / "t.toml"), "--target", "zzz"])
-    with pytest.raises(SystemExit, match="fetch_targets"):
-        main(["experiment", "--targets", str(tmp_path / "t.toml"), "--target", "a"])
+    assert main(["experiment", "--targets", str(tmp_path / "t.toml"), "--target", "zzz"]) == 2
+    assert main(["experiment", "--targets", str(tmp_path / "t.toml"), "--target", "a"]) == 2
 
 
-def test_run_rejects_a_python_without_pytest(repo, tmp_path):
+def test_run_rejects_a_python_without_pytest(repo, tmp_path, capsys):
     base = repo.commit("base", {"a": "1"})
-    with pytest.raises(SystemExit, match="cannot run --python"):
-        main(
-            [
-                "run",
-                "--repo",
-                str(repo.path),
-                "--base",
-                base,
-                "--commits",
-                base,
-                "--python",
-                str(tmp_path / "no-such-python"),
-            ]
-        )
+    argv = ["run", "--repo", str(repo.path), "--base", base, "--commits", base]
+    assert main([*argv, "--python", str(tmp_path / "no-such-python")]) == 2
+    assert "cannot run --python" in capsys.readouterr().err
 
 
 def test_run_listed_order_requeues_the_dependent_task(repo, tmp_path, capsys):
@@ -160,4 +135,146 @@ def test_run_listed_order_requeues_the_dependent_task(repo, tmp_path, capsys):
     )
     out = capsys.readouterr().out
     assert code == 0
-    assert "agent-failed -> accepted" in out
+    assert "base-conflict -> accepted" in out
+
+
+def test_bad_inputs_get_one_line_errors(repo, tmp_path, capsys):
+    base = repo.commit("base", {"a": "1"})
+    cases = [
+        (["plan", "--repo", str(tmp_path / "nowhere"), "--commits", base], "not a directory"),
+        (["plan", "--repo", str(tmp_path), "--commits", base], "not a git repository"),
+        (["plan", "--repo", str(repo.path), "--commits", ","], "--commits is empty"),
+        (["plan", "--repo", str(repo.path), "--commits", "nope"], "'nope' is not a commit"),
+        (["plan", "--repo", str(repo.path), "--commits", base, "--base", "zz"], "--base"),
+        (["plan", "--repo", str(repo.path)], "--tasks FILE.json"),
+    ]
+    for argv, message in cases:
+        assert main(argv) == 2, argv
+        err = capsys.readouterr().err
+        assert err.startswith("fleet: ") and message in err, (argv, err)
+        assert "Traceback" not in err
+
+
+@pytest.mark.parametrize(("flag", "value"), [("--workers", "0"), ("--retries", "-1")])
+def test_nonsense_counts_are_refused(repo, flag, value, capsys):
+    base = repo.commit("base", {"a": "1"})
+    with pytest.raises(SystemExit):
+        main(["run", "--repo", str(repo.path), "--commits", base, flag, value])
+    assert "must be at least" in capsys.readouterr().err
+
+
+def test_tasks_without_commits_need_a_real_agent(repo, tmp_path, capsys):
+    base = repo.commit("base", {"a": "1"})
+    tasks = tmp_path / "tasks.json"
+    tasks.write_text(json.dumps([{"id": "t1", "description": "add a feature"}]))
+    assert main(["run", "--repo", str(repo.path), "--base", base, "--tasks", str(tasks)]) == 2
+    err = capsys.readouterr().err
+    assert "t1" in err and "--agent ollama" in err
+
+
+def test_ollama_down_is_a_clean_error(repo, tmp_path, capsys):
+    base = repo.commit("base", {"a.py": "x = 1\n"})
+    tasks = tmp_path / "tasks.json"
+    tasks.write_text(json.dumps([{"id": "t1", "description": "change x"}]))
+    code = main(
+        [
+            "run",
+            "--repo",
+            str(repo.path),
+            "--base",
+            base,
+            "--tasks",
+            str(tasks),
+            "--agent",
+            "ollama",
+            "--ollama-url",
+            "http://127.0.0.1:9",
+            "--llm-cache",
+            str(tmp_path / "c"),
+            "--workdir",
+            str(tmp_path / "w"),
+        ]
+    )
+    err = capsys.readouterr().err
+    assert code == 2 and "not reachable" in err and "Traceback" not in err
+
+
+def test_run_prints_why_an_attempt_failed(repo, tmp_path, capsys):
+    base = repo.commit("base", {"f.txt": "1\n2\n"})
+    c1 = repo.commit("c1", {"f.txt": "one\n2\n"})
+    c2 = repo.commit("c2", {"f.txt": "uno\n2\n"})
+    main(
+        [
+            "run",
+            "--repo",
+            str(repo.path),
+            "--base",
+            base,
+            "--commits",
+            f"{c2},{c1}",
+            "--policy",
+            "parallel",
+            "--order",
+            "listed",
+            "--retries",
+            "0",
+            "--workdir",
+            str(tmp_path / "w"),
+        ]
+    )
+    out = capsys.readouterr().out
+    assert "attempt 1: conflicts: f.txt" in out
+
+
+def test_report_refuses_to_clobber_with_a_partial_summary(tmp_path, capsys):
+    runs = tmp_path / "runs"
+    runs.mkdir()
+    record = {
+        "target": "gone",
+        "mode": "consecutive",
+        "size": 1,
+        "window": 0,
+        "label": "serial",
+        "agent_runs": 1,
+        "redos": 0,
+        "makespan": 1,
+        "info": {"predicted": {}},
+        "tasks": [
+            {
+                "id": "t",
+                "first_outcome": "accepted",
+                "first_detail": None,
+                "final": "accepted",
+                "attempts": [
+                    {"outcome": "accepted", "detail": None, "conflicted": [], "candidate": "abc"}
+                ],
+            }
+        ],
+    }
+    (runs / "gone.jsonl").write_text(json.dumps(record) + "\n")
+    out = tmp_path / "summary.json"
+    out.write_text("{}")
+    argv = [
+        "report",
+        "--runs",
+        str(runs),
+        "--out",
+        str(out),
+        "--resamples",
+        "5",
+        "--targets",
+        str(tmp_path / "none.toml"),
+    ]
+    assert main(argv) == 2
+    err = capsys.readouterr().err
+    assert "warning: no git repository for gone" in err and "not overwriting" in err
+    assert out.read_text() == "{}"
+    assert main([*argv, "--force"]) == 0
+    assert json.loads(out.read_text())["repos_missing"] == ["gone"]
+
+
+def test_help_shows_defaults(capsys):
+    with pytest.raises(SystemExit):
+        parser().parse_args(["experiment", "--help"])
+    out = " ".join(capsys.readouterr().out.split())
+    assert "(default: 2,4,8,16)" in out and "(default: results/runs)" in out

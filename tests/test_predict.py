@@ -133,16 +133,18 @@ def test_description_predictor_signals(repo):
     assert "pkg/parser.py" in stem.files
 
 
-def test_description_spans_claim_only_the_named_symbol(repo):
-    head = _description_repo(repo)
-    spans = DescriptionPredictor(repo.git, hot_share=1.1, symbol_spans=True)
-    a = spans.footprint(Task("a", "change echo_via_pager"), head)
-    b = spans.footprint(Task("b", "change prompt"), head)
-    assert a.hunks["pkg/termui.py"] == [Hunk(1, 2)]
-    assert b.hunks["pkg/termui.py"] == [Hunk(5, 2)]
-    # Same file, different functions: the source file no longer counts as a collision
-    # (the co-changed test module and changelog still do - they are claimed whole).
-    assert "pkg/termui.py" not in a.overlapping_files(b, margin=1)
+def test_ranked_puts_the_named_source_first_and_the_changelog_last(repo):
+    _description_repo(repo)
+    for n in range(3):  # the changelog is touched far more often than anything else
+        head = repo.commit(f"notes {n}", {"CHANGES.rst": f"notes {n}\n"})
+    predictor = DescriptionPredictor(repo.git, hot_share=0.6, cochange_share=0.5)
+    ranked = predictor.ranked(Task("t", "change echo_via_pager"), head)
+    paths = [r.path for r in ranked]
+    assert paths[0] == "pkg/termui.py"
+    assert paths[-1] == "CHANGES.rst"
+    assert ranked[0].spans == [Hunk(1, 2)]
+    # footprint and ranked agree on the files
+    assert set(paths) == predictor.footprint(Task("t", "change echo_via_pager"), head).files
 
 
 def test_description_predictor_ignores_commit_trailers(repo):

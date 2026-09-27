@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Protocol
 
 from .agents import AgentResult
-from .gitops import Git
+from .gitops import Git, Hunk
 from .predict import DescriptionPredictor
 from .tasks import Task
 
@@ -168,6 +168,34 @@ def _read(path: Path) -> str:
     return path.read_bytes().decode("utf-8", errors="replace")
 
 
+def _excerpts(text: str, spans: list[Hunk], budget: int, context: int = 10) -> str:
+    """Verbatim blocks of `text` around `spans` (or from the top), within `budget` chars."""
+    lines = text.splitlines(keepends=True)
+    ranges = [
+        (max(1, h.start - context), min(len(lines), h.start + h.length + context)) for h in spans
+    ] or [(1, len(lines))]
+    merged: list[tuple[int, int]] = []
+    for lo, hi in sorted(ranges):
+        if merged and lo <= merged[-1][1] + 1:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], hi))
+        else:
+            merged.append((lo, hi))
+    blocks, used = [], 0
+    for lo, hi in merged:
+        body = ""
+        for n in range(lo, hi + 1):
+            if used + len(body) + len(lines[n - 1]) > budget:
+                hi = n - 1
+                break
+            body += lines[n - 1]
+        if not body:
+            break
+        blocks.append(f"lines {lo}-{hi} of {len(lines)}:\n```\n{body}```")
+        used += len(body)
+    note = "(Only these lines are shown. SEARCH text must be copied from them exactly.)"
+    return "\n".join([*blocks, note])
+
+
 def _write(path: Path, text: str) -> None:
     path.write_bytes(text.encode("utf-8"))
 
@@ -184,26 +212,31 @@ class OllamaAgent:
         self.max_chars = max_chars
 
     def prompt_for(self, task: Task, worktree: Path, git: Git) -> str:
+        """The task plus the files the description points at most directly.
+
+        Files are ranked by relevance (named symbols first, a changelog last), not by name.
+        A file too long for its share of the budget is shown as verbatim excerpts around the
+        named symbols (or its opening lines), each labelled with its line range, and the model
+        is told that SEARCH text must come from the lines shown.
+        """
         head = git.out("rev-parse", "HEAD", cwd=worktree)
-        guess = DescriptionPredictor(Git(worktree)).footprint(task, head)
-        chosen = sorted(p for p in guess.files if (worktree / p).is_file())[: self.max_files]
-        budget = self.max_chars
+        ranked = DescriptionPredictor(Git(worktree)).ranked(task, head)
+        chosen = [r for r in ranked if (worktree / r.path).is_file()][: self.max_files]
+        share = self.max_chars // max(1, len(chosen))
         sections = []
-        for path in chosen:
-            text = (worktree / path).read_text(encoding="utf-8", errors="replace")
-            if len(text) > budget:
-                text = text[:budget] + "\n... (truncated)\n"
-            budget -= len(text)
-            sections.append(f"### {path}\n```\n{text}```")
-            if budget <= 0:
-                break
+        for item in chosen:
+            text = _read(worktree / item.path)
+            if len(text) <= share:
+                sections.append(f"### {item.path}\n```\n{text}```")
+            else:
+                sections.append(f"### {item.path} (excerpts)\n{_excerpts(text, item.spans, share)}")
         return PROMPT.format(task=task.description.strip(), files="\n\n".join(sections))
 
     def work(self, task: Task, worktree: Path, git: Git) -> AgentResult:
         response = self.client.generate(self.model, self.prompt_for(task, worktree, git))
         edits = parse_edits(response)
         if not edits:
-            return AgentResult(False, "the model returned no edit blocks")
+            return AgentResult(False, "the model returned no edit blocks")  # an agent error
         problems = apply_edits(worktree, edits)
         if problems:
             return AgentResult(False, "; ".join(problems))

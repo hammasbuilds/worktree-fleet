@@ -29,7 +29,8 @@ run() {
   for t in $TARGETS; do
     uv run fleet experiment --target "$t" --agent ollama --model "$MODEL" \
       --ollama-url "$OLLAMA_URL" --llm-cache results/llm-cache --sizes "$SIZES" \
-      --max-windows "$WINDOWS" --policies "$POLICIES" --out results/runs-llm --workers 1 \
+      --max-windows "$WINDOWS" --policies "$POLICIES" --modes consecutive \
+      --out results/runs-llm --workers 1 \
       "${extra[@]}"
   done
 }

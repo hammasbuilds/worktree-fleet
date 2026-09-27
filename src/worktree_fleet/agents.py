@@ -17,9 +17,14 @@ from .tasks import Task
 
 @dataclass
 class AgentResult:
+    """What an agent reports. When `ok` is false, `conflict` says why: True means the work
+    collides with the base it was given (a conflict, attributable to parallelism); False means
+    the agent itself failed (an error, attributable to the agent)."""
+
     ok: bool
     note: str = ""
     conflicted: list[str] = field(default_factory=list)
+    conflict: bool = False
 
 
 class Agent(Protocol):
@@ -66,5 +71,6 @@ class ReplayAgent:
                 False,
                 "the change does not apply to this base: it edits lines this base lacks",
                 result.conflicted,
+                conflict=True,
             )
         return result.tree, AgentResult(True)

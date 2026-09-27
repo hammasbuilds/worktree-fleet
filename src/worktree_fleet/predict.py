@@ -137,6 +137,13 @@ _GENERIC = {
 }
 
 
+@dataclass(frozen=True)
+class RankedFile:
+    path: str
+    score: float
+    spans: list[Hunk]
+
+
 @dataclass
 class _RepoIndex:
     symbols: dict[str, set[str]] = field(default_factory=dict)
@@ -160,8 +167,8 @@ class DescriptionPredictor:
     4. co-change: for every predicted source file, the files that changed alongside it in at
        least `cochange_share` of the commits that touched it (usually its test module).
 
-    When `symbol_spans` is on, a file reached only through named symbols is claimed as just
-    those symbols' line spans instead of whole.
+    `ranked` orders the same files by how directly the description points at them, and
+    carries the line spans of any named symbols - what an LLM agent is shown first.
     """
 
     def __init__(
@@ -170,48 +177,59 @@ class DescriptionPredictor:
         history: int = 300,
         hot_share: float = 0.25,
         cochange_share: float = 0.4,
-        symbol_spans: bool = False,
         margin: int = 1,
     ) -> None:
         self.git = git
         self.history = history
         self.hot_share = hot_share
         self.cochange_share = cochange_share
-        self.symbol_spans = symbol_spans
         self.margin = margin
-        self.name = "description-spans" if symbol_spans else "description"
+        self.name = "description"
         self._indexes: dict[str, _RepoIndex] = {}
 
     def footprint(self, task: Task, base: str) -> Footprint:
+        return Footprint(files={r.path for r in self.ranked(task, base)})
+
+    def ranked(self, task: Task, base: str) -> list[RankedFile]:
+        """Predicted files, most directly named first.
+
+        Score: 3 per named symbol the file defines (shared between the files defining it),
+        2 for a file-stem match, the co-change share for a partner of a named file; "hot"
+        files (changed by a large share of all commits) sort last unless the description
+        names them.
+        """
         index = self._index(base)
-        words = _description_tokens(task.description)
-        via_symbol: dict[str, list[Hunk]] = defaultdict(list)
-        whole: set[str] = set()
-        for word in words:
+        scores: Counter[str] = Counter()
+        spans: dict[str, list[Hunk]] = defaultdict(list)
+        for word in _description_tokens(task.description):
             for name in {word, word.split(".")[-1]}:
                 owners = index.symbols.get(name)
                 if owners and len(owners) <= 2:
                     for path in owners:
-                        via_symbol[path].extend(index.spans.get((path, name), []))
+                        scores[path] += 3 / len(owners)
+                        spans[path].extend(index.spans.get((path, name), []))
             owners = index.stems.get(word.lower())
             if owners and len(owners) <= 2:
-                whole |= owners
-        seeds = set(via_symbol) | whole
-        files = seeds | index.hot
-        for path in seeds:
-            partners = index.cochange.get(path)
-            if not partners:
-                continue
+                for path in owners:
+                    scores[path] += 2
+        named = set(scores)
+        for path in named:
             base_count = index.touched[path]
-            for other, count in partners.items():
-                if base_count >= 2 and count / base_count >= self.cochange_share:
-                    files.add(other)
-        hunks: dict[str, list[Hunk]] = {}
-        if self.symbol_spans:
-            for path, spans in via_symbol.items():
-                if path not in whole and path not in index.hot and spans:
-                    hunks[path] = spans
-        return Footprint(files=files, hunks=hunks)
+            if base_count < 2:
+                continue
+            for other, count in index.cochange.get(path, Counter()).items():
+                share = count / base_count
+                if share >= self.cochange_share:
+                    scores[other] = max(scores[other], share)
+        for path in index.hot:
+            scores[path] = max(scores[path], 0.1)
+        # A hot file (a changelog) is almost always edited and almost never the point of
+        # the task: it goes last whatever else points at it.
+        order = sorted(scores, key=lambda p: (p in index.hot and p not in named, -scores[p], p))
+        return [
+            RankedFile(p, scores[p], sorted(set(spans.get(p, [])), key=lambda h: h.start))
+            for p in order
+        ]
 
     def _index(self, base: str) -> _RepoIndex:
         if base in self._indexes:
@@ -299,15 +317,13 @@ class ExcludingPredictor:
         return Footprint(files=keep, hunks={f: h for f, h in fp.hunks.items() if f in keep})
 
 
-PREDICTOR_NAMES = ("description", "description-spans", "oracle-files", "oracle-hunks")
+PREDICTOR_NAMES = ("description", "oracle-files", "oracle-hunks")
 
 
 def build_predictor(name: str, git: Git) -> Predictor:
     """Construct a predictor by its CLI name."""
     if name == "description":
         return DescriptionPredictor(git)
-    if name == "description-spans":
-        return DescriptionPredictor(git, symbol_spans=True)
     if name == "oracle-files":
         return FilePredictor(git)
     if name == "oracle-hunks":

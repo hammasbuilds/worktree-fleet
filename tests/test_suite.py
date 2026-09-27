@@ -36,7 +36,7 @@ def test_runner_records_failures_and_caches_by_tree(repo, tmp_path, suite_config
     bad = repo.commit("bad", {"test_x.py": "def test_x():\n    assert False\n"})
     wt = _worktree(repo, tmp_path, good)
     runner = SuiteRunner(repo.git, suite_config, tmp_path / "cache")
-    assert runner.result(good, wt).green
+    assert not runner.result(good, wt).failed
     red = runner.result(bad, wt)
     assert red.failed == {"test_x::test_x"} and red.runs == 2
     runs = runner.fresh_runs
@@ -65,13 +65,46 @@ def test_flaky_test_is_not_a_failure(repo, tmp_path, suite_config):
     assert result.flaky == {"test_f::test_flip"}
 
 
-def test_confirmed_failure_is_not_rerun_everywhere(repo, tmp_path, suite_config):
-    a = repo.commit("a", {"test_x.py": "def test_x():\n    assert False\n", "v": "1"})
-    b = repo.commit("b", {"v": "2"})
+FLIP = (
+    "import os, pathlib\n"
+    "def test_t():\n"
+    "    p = pathlib.Path(os.environ['FLIP_FILE'])\n"
+    "    n = int(p.read_text()) + 1\n"
+    "    p.write_text(str(n))\n"
+    "    assert n % 2 == 0\n"
+)
+
+
+def _flip_config(suite_config, tmp_path):
+    counter = tmp_path / "count.txt"
+    counter.write_text("0")
+    return SuiteConfig(**{**suite_config.__dict__, "env": {"FLIP_FILE": str(counter)}})
+
+
+def test_a_failure_confirmed_on_one_tree_is_still_rechecked_on_another(
+    repo, tmp_path, suite_config
+):
+    """test_t fails for real on tree a and is flaky on tree b: b must come out flaky, not
+    failing - a failure confirmed elsewhere is no evidence about this tree."""
+    a = repo.commit("a", {"test_t.py": "def test_t():\n    assert False\n"})
+    b = repo.commit("b", {"test_t.py": FLIP})
     wt = _worktree(repo, tmp_path, a)
-    runner = SuiteRunner(repo.git, suite_config, None)
-    assert runner.result(a, wt).runs == 2
-    assert runner.result(b, wt).runs == 1
+    runner = SuiteRunner(repo.git, _flip_config(suite_config, tmp_path), tmp_path / "cache")
+    assert runner.result(a, wt).failed == {"test_t::test_t"}
+    flaky = runner.result(b, wt)
+    assert flaky.failed == set() and flaky.flaky == {"test_t::test_t"}
+
+
+def test_expected_failures_skip_the_rerun_but_only_for_that_caller(repo, tmp_path, suite_config):
+    a = repo.commit("a", {"test_x.py": "def test_x():\n    assert False\n"})
+    wt = _worktree(repo, tmp_path, a)
+    runner = SuiteRunner(repo.git, suite_config, tmp_path / "cache")
+    quick = runner.result(a, wt, expected={"test_x::test_x"})
+    assert quick.runs == 1 and not quick.confirmed
+    # A caller that did not expect the failure gets a fresh, confirmed run, not the cache.
+    strict = runner.result(a, wt)
+    assert strict.runs == 2 and strict.confirmed
+    assert runner.cached(repo.git.tree_of(a), expected=frozenset()).confirmed
 
 
 def test_broken_collection_and_empty_suite_are_errors(repo, tmp_path, suite_config):

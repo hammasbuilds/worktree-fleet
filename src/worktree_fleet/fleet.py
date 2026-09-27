@@ -27,9 +27,9 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .agents import Agent, InMemoryAgent
+from .agents import Agent, AgentResult, InMemoryAgent
 from .gitops import Git
-from .mergequeue import ACCEPTED, AGENT_FAILED, Integration, MergeQueue
+from .mergequeue import ACCEPTED, AGENT_ERROR, BASE_CONFLICT, Integration, MergeQueue
 from .predict import Predictor, predicted_conflicts
 from .tasks import Task
 
@@ -281,11 +281,9 @@ class Fleet:
             except ConnectionError:
                 raise  # the agent's backend is down: stop, rather than fail every task
             except Exception as exc:  # one agent crashing must not take the fleet with it
-                return Attempt(number, start, AGENT_FAILED, note=f"agent crashed: {exc!r}")
+                return Attempt(number, start, AGENT_ERROR, note=f"agent crashed: {exc!r}")
             if not result.ok:
-                return Attempt(
-                    number, start, AGENT_FAILED, conflicted=result.conflicted, note=result.note
-                )
+                return _failed(number, start, result)
             branch = self.git.commit_worktree(path, f"{task.id}: {task.description[:60]}")
             if branch is None:
                 return Attempt(number, start, NOOP, note="the agent changed nothing")
@@ -302,13 +300,16 @@ class Fleet:
         assert isinstance(self.agent, InMemoryAgent)
         tree, result = self.agent.work_on_tree(task, start, self.git)
         if tree is None:
-            return Attempt(
-                number, start, AGENT_FAILED, conflicted=result.conflicted, note=result.note
-            )
+            return _failed(number, start, result)
         if tree == self.git.tree_of(start):
             return Attempt(number, start, NOOP, note="the agent changed nothing")
         branch = self.git.commit_tree(tree, [start], f"{task.id}: {task.description[:60]}")
         return Attempt(number, start, "pending", branch=branch, note=result.note)
+
+
+def _failed(number: int, start: str, result: AgentResult) -> Attempt:
+    outcome = BASE_CONFLICT if result.conflict else AGENT_ERROR
+    return Attempt(number, start, outcome, conflicted=result.conflicted, note=result.note)
 
 
 def _slug(text: str) -> str:

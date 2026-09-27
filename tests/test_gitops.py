@@ -68,7 +68,7 @@ def test_replay_is_an_in_memory_cherry_pick(repo):
     onto_base = git.replay(c2, base)
     assert onto_base.clean
     shown = git.commit_tree(onto_base.tree, [base], "replayed")
-    assert git.show_file(shown, "f.txt") == "1\n2\n3\n4\n5\n6\n7\neight\n"
+    assert repo.show(shown, "f.txt") == "1\n2\n3\n4\n5\n6\n7\neight\n"
     # Replaying onto the real parent reproduces the real commit exactly.
     assert git.replay(c2, c1).tree == git.tree_of(c2)
 
@@ -119,5 +119,5 @@ def test_attributes_file_turns_on_the_union_driver(repo, tmp_path):
     union = Git(repo.path, attributes_file=attrs)
     merged = union.merge(a, b)
     assert merged.clean
-    text = union.show_file(union.commit_tree(merged.tree, [a, b], "m"), "CHANGES.rst")
+    text = repo.show(union.commit_tree(merged.tree, [a, b], "m"), "CHANGES.rst")
     assert "- entry a" in text and "- entry b" in text

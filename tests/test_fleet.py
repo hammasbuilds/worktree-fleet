@@ -2,7 +2,14 @@ import pytest
 
 from worktree_fleet.agents import AgentResult, ReplayAgent
 from worktree_fleet.fleet import NOOP, Fleet, plan_waves
-from worktree_fleet.mergequeue import ACCEPTED, AGENT_FAILED, SEMANTIC, TEXTUAL, MergeQueue
+from worktree_fleet.mergequeue import (
+    ACCEPTED,
+    AGENT_ERROR,
+    BASE_CONFLICT,
+    SEMANTIC,
+    TEXTUAL,
+    MergeQueue,
+)
 from worktree_fleet.predict import FilePredictor
 from worktree_fleet.suite import SuiteRunner
 from worktree_fleet.tasks import Task
@@ -45,11 +52,11 @@ def test_parallel_fleet_hits_a_textual_conflict_and_redo_cannot_fix_it(repo, tmp
     outcomes = [r.first.outcome for r in report.records]
     assert outcomes == [ACCEPTED, ACCEPTED, TEXTUAL]
     # The redo replays c onto the new main; c still rewrites a line a already changed.
-    assert [a.outcome for a in report.records[2].attempts] == [TEXTUAL, AGENT_FAILED]
+    assert [a.outcome for a in report.records[2].attempts] == [TEXTUAL, BASE_CONFLICT]
     assert report.records[2].final == "rejected"
     assert report.makespan == 1 + 1 and report.agent_runs == 4
-    assert repo.git.show_file(report.main, "a.txt") == "one\n2\n3\n"
-    assert repo.git.show_file(report.main, "b.txt") == "y\n"
+    assert repo.show(report.main, "a.txt") == "one\n2\n3\n"
+    assert repo.show(report.main, "b.txt") == "y\n"
 
 
 def test_serial_fleet_replays_real_history_exactly(repo, tmp_path):
@@ -63,7 +70,7 @@ def test_serial_fleet_replays_real_history_exactly(repo, tmp_path):
     assert report.makespan == 2
     # In parallel, c2 was written on top of c1's line: it cannot even apply to the base.
     par = _fleet(repo, tmp_path, order="listed").run(tasks, base, "parallel", run_id="p")
-    assert par.records[1].first.outcome == AGENT_FAILED
+    assert par.records[1].first.outcome == BASE_CONFLICT
     assert par.records[1].attempts[1].outcome == ACCEPTED  # the redo on the new main works
     assert repo.git.tree_of(par.main) == repo.git.tree_of(c2)
 
@@ -74,7 +81,7 @@ def test_predicted_waves_avoid_the_conflict(repo, tmp_path):
     report = _fleet(repo, tmp_path).run(tasks, base, "predicted", predictor, run_id="w")
     assert [[report.records[i].task.id for i in w] for w in report.waves] == [["a", "b"], ["c"]]
     # c now starts from a main that already has a, and its replay conflicts at the base.
-    assert report.records[2].first.outcome == AGENT_FAILED
+    assert report.records[2].first.outcome == BASE_CONFLICT
 
 
 def test_semantic_conflict_is_caught_by_the_test_gate(semantic_history, tmp_path, suite_config):
@@ -88,7 +95,7 @@ def test_semantic_conflict_is_caught_by_the_test_gate(semantic_history, tmp_path
     assert first.outcome == SEMANTIC
     assert first.new_failures == ["test_shout::test_shout"]
     # Main never took the broken merge.
-    assert repo.git.show_file(report.main, "test_shout.py") is None
+    assert repo.show(report.main, "test_shout.py") is None
 
 
 def test_queue_does_not_blame_a_failure_main_already_had(repo, tmp_path, suite_config):
@@ -165,7 +172,7 @@ def test_failed_task_is_requeued_behind_the_rest_of_its_wave(repo, tmp_path):
     c2 = repo.commit("c2", {"f.txt": "one\ntwo\n3\n4\n5\n6\n"})
     tasks = [Task("c2", "", c2), Task("c1", "", c1)]
     report = _fleet(repo, tmp_path, order="listed").run(tasks, base, "parallel", run_id="rq")
-    assert [a.outcome for a in report.records[0].attempts] == [AGENT_FAILED, ACCEPTED]
+    assert [a.outcome for a in report.records[0].attempts] == [BASE_CONFLICT, ACCEPTED]
     assert report.records[1].final == ACCEPTED
     assert repo.git.tree_of(report.main) == repo.git.tree_of(c2)
 
@@ -197,5 +204,5 @@ def test_a_crashing_agent_fails_its_task_not_the_fleet(repo, tmp_path):
 
     fleet = Fleet(repo.git, _Crashing(), tmp_path / "w", factory, retries=0)
     report = fleet.run([Task("t", "x")], base, "parallel", run_id="crash")
-    assert report.records[0].first.outcome == AGENT_FAILED
+    assert report.records[0].first.outcome == AGENT_ERROR
     assert "boom" in report.records[0].first.note

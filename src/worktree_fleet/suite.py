@@ -15,7 +15,7 @@ import subprocess
 import tempfile
 import time
 import xml.etree.ElementTree as ET
-from collections.abc import Sequence
+from collections.abc import Sequence, Set
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -49,10 +49,8 @@ class SuiteResult:
     duration: float
     runs: int
     detail: str = ""
-
-    @property
-    def green(self) -> bool:
-        return not self.failed
+    # True when every real (non-pseudo) failure was seen on a second run as well.
+    confirmed: bool = True
 
     def to_json(self) -> dict[str, object]:
         return {
@@ -63,6 +61,7 @@ class SuiteResult:
             "duration": round(self.duration, 3),
             "runs": self.runs,
             "detail": self.detail,
+            "confirmed": self.confirmed,
         }
 
     @classmethod
@@ -75,6 +74,8 @@ class SuiteResult:
             duration=float(data["duration"]),  # type: ignore[arg-type]
             runs=int(data["runs"]),  # type: ignore[arg-type]
             detail=str(data.get("detail", "")),
+            # Results cached before this field existed may have skipped their rerun.
+            confirmed=bool(data.get("confirmed", not (set(data["failed"]) - PSEUDO_IDS))),  # type: ignore[arg-type]
         )
 
 
@@ -138,47 +139,65 @@ class SuiteRunner:
         self.config = config
         self.cache_dir = cache_dir
         self.fresh_runs = 0
-        # Tests already confirmed failing by a rerun. A tree whose only failures are these
-        # is not rerun again - otherwise one permanently broken test doubles every run.
-        self.confirmed: set[str] = set()
         if cache_dir is not None:
             cache_dir.mkdir(parents=True, exist_ok=True)
 
     def _cache_path(self, tree: str) -> Path | None:
         return None if self.cache_dir is None else self.cache_dir / f"{tree}.json"
 
-    def cached(self, tree: str) -> SuiteResult | None:
+    def cached(self, tree: str, expected: Set[str] | None = None) -> SuiteResult | None:
+        """A cached result that is good enough for a caller expecting `expected` failures.
+
+        A result recorded without a confirming rerun (one run, some failures) is only reused
+        by a caller for whom those failures were expected anyway; anyone else gets a miss and
+        a fresh, confirmed run. `expected=None` accepts any cached result.
+        """
         path = self._cache_path(tree)
         if path is None or not path.exists():
             return None
-        return SuiteResult.from_json(json.loads(path.read_text(encoding="utf-8")))
+        hit = SuiteResult.from_json(json.loads(path.read_text(encoding="utf-8")))
+        unconfirmed = set() if hit.confirmed else hit.failed - PSEUDO_IDS
+        if expected is not None and not unconfirmed <= expected:
+            return None
+        return hit
 
-    def result(self, commit: str, worktree: Path) -> SuiteResult:
-        """Test `commit`'s tree, checking it out into `worktree` only on a cache miss."""
+    def result(
+        self, commit: str, worktree: Path, expected: Set[str] | None = frozenset()
+    ) -> SuiteResult:
+        """Test `commit`'s tree, checking it out into `worktree` only on a cache miss.
+
+        Any failure outside `expected` is confirmed by a second run of the same tree; a test
+        that fails once and passes once is flaky, not failing. `expected=None` skips the
+        confirmation entirely (for callers that only use failures to exclude tests).
+        """
         tree = self.git.tree_of(commit)
-        hit = self.cached(tree)
+        hit = self.cached(tree, expected)
         if hit is not None:
             return hit
         self.git.checkout_tree(worktree, commit)
         started = time.perf_counter()
-        first, passed, detail = self.run_once_detailed(worktree)
+        first, passed, detail = self.run_once(worktree)
         runs = 1
         # A run that did not complete says nothing about any test. Check out afresh and try
         # again before believing it: under heavy load a run can die for reasons that have
         # nothing to do with the tree.
         while first <= PSEUDO_IDS and first and runs < 3:
             self.git.checkout_tree(worktree, commit)
-            first, passed, detail = self.run_once_detailed(worktree)
+            first, passed, detail = self.run_once(worktree)
             runs += 1
         failed, flaky = first, set()
-        if first - self.confirmed - PSEUDO_IDS:
-            second, passed2, _ = self.run_once_detailed(worktree)
+        needs_confirming = first - PSEUDO_IDS - (expected or set())
+        confirmed = not (first - PSEUDO_IDS)
+        if expected is not None and needs_confirming:
+            confirmed = True
+            second, passed2, _ = self.run_once(worktree)
             runs += 1
             failed = first & second
             flaky = first ^ second
             passed = min(passed, passed2)
-            self.confirmed |= failed - PSEUDO_IDS
-        result = SuiteResult(tree, failed, flaky, passed, time.perf_counter() - started, runs)
+        result = SuiteResult(
+            tree, failed, flaky, passed, time.perf_counter() - started, runs, "", confirmed
+        )
         if failed & PSEUDO_IDS:
             result.detail = detail
         self.fresh_runs += runs
@@ -189,12 +208,7 @@ class SuiteRunner:
             os.replace(tmp, path)
         return result
 
-    def run_once(self, worktree: Path) -> tuple[set[str], int]:
-        """One pytest invocation. Returns (failing ids, passing count)."""
-        failed, passed, _ = self.run_once_detailed(worktree)
-        return failed, passed
-
-    def run_once_detailed(self, worktree: Path) -> tuple[set[str], int, str]:
+    def run_once(self, worktree: Path) -> tuple[set[str], int, str]:
         """One pytest invocation: (failing ids, passing count, tail of its output)."""
         env = dict(os.environ)
         env.pop("VIRTUAL_ENV", None)

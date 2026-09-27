@@ -47,6 +47,11 @@ class RepoBuilder:
     def checkout(self, ref: str) -> None:
         self._git("checkout", "-q", ref)
 
+    def show(self, rev: str, path: str) -> str | None:
+        """A file's content at `rev`, or None if it does not exist there."""
+        proc = subprocess.run(["git", "show", f"{rev}:{path}"], cwd=self.path, capture_output=True)
+        return proc.stdout.decode("utf-8") if proc.returncode == 0 else None
+
 
 @pytest.fixture
 def repo(tmp_path: Path) -> RepoBuilder:

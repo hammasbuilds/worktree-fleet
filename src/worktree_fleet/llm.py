@@ -49,6 +49,11 @@ class Client(Protocol):
     def generate(self, model: str, prompt: str) -> str: ...
 
 
+# Ollama is local: never route it through HTTP(S)_PROXY from the environment, which would
+# send localhost traffic to a proxy that cannot reach it.
+_DIRECT = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+
 class OllamaClient:
     """Minimal `/api/generate` client with a disk cache. Standard library only."""
 
@@ -92,7 +97,7 @@ class OllamaClient:
             f"{self.url}/api/generate", data=body, headers={"Content-Type": "application/json"}
         )
         try:
-            with urllib.request.urlopen(request, timeout=self.timeout) as resp:
+            with _DIRECT.open(request, timeout=self.timeout) as resp:
                 data = json.loads(resp.read())
         except urllib.error.URLError as exc:
             raise ConnectionError(f"Ollama at {self.url} is not reachable: {exc}") from exc

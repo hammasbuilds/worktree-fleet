@@ -56,7 +56,7 @@ if command -v nvidia-smi >/dev/null; then
     exit 1
   fi
 fi
-if ! curl -sf "$OLLAMA_URL/api/tags" | grep -q "\"$MODEL\""; then
+if ! curl --noproxy '*' -sf "$OLLAMA_URL/api/tags" | grep -q "\"$MODEL\""; then
   echo "Ollama at $OLLAMA_URL is down or does not have $MODEL pulled" >&2
   exit 1
 fi

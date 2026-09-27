@@ -140,3 +140,33 @@ def test_long_files_are_shown_as_verbatim_excerpts(repo, tmp_path):
     assert "def target_fn(x):\n    return x + 1\n" in prompt
     assert "SEARCH text must be copied from them exactly" in prompt
     assert len(prompt) < 6000
+
+
+def test_client_ignores_proxy_settings(tmp_path, monkeypatch):
+    """A proxy in the environment must not swallow requests to the local server."""
+    import http.server
+    import threading
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):  # noqa: N802
+            self.rfile.read(int(self.headers["Content-Length"]))
+            body = json.dumps({"response": "direct"}).encode()
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:9")
+    monkeypatch.setenv("http_proxy", "http://127.0.0.1:9")
+    monkeypatch.delenv("NO_PROXY", raising=False)
+    monkeypatch.delenv("no_proxy", raising=False)
+    try:
+        client = OllamaClient(f"http://127.0.0.1:{server.server_port}", cache_dir=tmp_path)
+        assert client.generate("m", "p") == "direct"
+    finally:
+        server.shutdown()

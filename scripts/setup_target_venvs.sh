@@ -24,7 +24,11 @@ for name in "${names[@]}"; do
   venv=".venvs/$name"
   py="$venv/Scripts/python.exe"
   [ -x "$py" ] || py="$venv/bin/python"
-  uv venv -q --python 3.12 "$venv"
+  # Flask before 3.0 calls pkgutil.get_loader, deprecated in 3.12, and its test config turns
+  # every warning into an error - so its era runs on Python 3.11.
+  pyver=3.12
+  [ "$name" = flask-2x ] && pyver=3.11
+  uv venv -q --python "$pyver" "$venv"
   [ -x "$py" ] || py="$venv/bin/python"
   # shellcheck disable=SC2086
   uv pip install -q --python "$py" $COMMON ${EXTRA[$name]}

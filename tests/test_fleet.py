@@ -180,3 +180,22 @@ def test_in_memory_replay_matches_the_worktree_path(repo, tmp_path, policy):
     assert repo.git.tree_of(live.main) == repo.git.tree_of(fast.main)
     for x, y in zip(live.records, fast.records, strict=True):
         assert [a.outcome for a in x.attempts] == [a.outcome for a in y.attempts]
+
+
+class _Crashing:
+    name = "crashing"
+
+    def work(self, task, worktree, git):
+        raise RuntimeError("boom")
+
+
+def test_a_crashing_agent_fails_its_task_not_the_fleet(repo, tmp_path):
+    base = repo.commit("base", {"a": "1"})
+
+    def factory(start, ref):
+        return MergeQueue(repo.git, start, ref)
+
+    fleet = Fleet(repo.git, _Crashing(), tmp_path / "w", factory, retries=0)
+    report = fleet.run([Task("t", "x")], base, "parallel", run_id="crash")
+    assert report.records[0].first.outcome == AGENT_FAILED
+    assert "boom" in report.records[0].first.note

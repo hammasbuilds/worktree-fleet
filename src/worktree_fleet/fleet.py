@@ -276,7 +276,12 @@ class Fleet:
             path.parent.mkdir(parents=True, exist_ok=True)
             self.git.worktree_add(path, start)
         try:
-            result = self.agent.work(task, path, self.git)
+            try:
+                result = self.agent.work(task, path, self.git)
+            except ConnectionError:
+                raise  # the agent's backend is down: stop, rather than fail every task
+            except Exception as exc:  # one agent crashing must not take the fleet with it
+                return Attempt(number, start, AGENT_FAILED, note=f"agent crashed: {exc!r}")
             if not result.ok:
                 return Attempt(
                     number, start, AGENT_FAILED, conflicted=result.conflicted, note=result.note

@@ -49,7 +49,8 @@ pytest_args = [
 ]
 
 # The same repository in its Werkzeug 2 era (2021-04 to 2023-09): its tests cannot import
-# Werkzeug 3, so it gets its own environment, and its windows share no commit with `flask`.
+# Werkzeug 3 (and warn on Python 3.12), so it gets its own Python 3.11 environment. Its
+# windows share no commit with `flask`.
 [targets.flask-2x]
 url = "https://github.com/pallets/flask"
 path = "targets/flask"

@@ -44,9 +44,18 @@ def conflict_kind(paths: list[str]) -> str:
     return "other"
 
 
-def window_counts(record: dict) -> Counts:
-    """Everything the report needs from one (window, policy) run, as summable counts."""
+def window_counts(record: dict, serial: dict | None = None) -> Counts:
+    """Everything the report needs from one (window, policy) run, as summable counts.
+
+    `serial` is the same window run serially. A task that fails its first attempt here but
+    not under serial is an *excess* failure: one that running the tasks in parallel caused,
+    as opposed to one the replay would have hit anyway (a change that needs a housekeeping
+    commit the fleet was never given).
+    """
     c: Counts = defaultdict(float)
+    serial_ok = None
+    if serial is not None:
+        serial_ok = {t["id"]: t["first_outcome"] in (ACCEPTED, NOOP) for t in serial["tasks"]}
     size = record["size"]
     c["windows"] = 1
     c["tasks"] = size
@@ -63,6 +72,8 @@ def window_counts(record: dict) -> Counts:
             continue
         failed_any = True
         c["first_fail"] += 1
+        if serial_ok is not None and serial_ok.get(task["id"], False):
+            c["excess_fail"] += 1
         c["rejected"] += not landed
         if kind in CONFLICTS:
             c[kind] += 1
@@ -73,6 +84,8 @@ def window_counts(record: dict) -> Counts:
         elif kind == AGENT_ERROR:
             c["agent_error"] += 1
     c["window_failed"] = 1 if failed_any else 0
+    c["paired"] = 1 if serial_ok is not None else 0
+    c["paired_tasks"] = size if serial_ok is not None else 0
     return c
 
 
@@ -96,6 +109,7 @@ def _conflict(total: Counts) -> float:
 
 METRICS: dict[str, Callable[[Counts], float]] = {
     "first_attempt_failure": ratio("first_fail", "tasks"),
+    "excess_over_serial": ratio("excess_fail", "paired_tasks"),
     "conflict": _conflict,
     "base_conflict": ratio(BASE_CONFLICT, "tasks"),
     "merge_conflict": ratio(TEXTUAL, "tasks"),
@@ -158,9 +172,15 @@ def bootstrap_many(
 
 
 def summarise(records: list[dict], rng: random.Random, resamples: int) -> dict:
+    serial = {
+        (r["target"], r["mode"], r["size"], r["window"]): r
+        for r in records
+        if r["label"] == "serial"
+    }
     groups: dict[tuple[str, str, int, str], list[Counts]] = defaultdict(list)
     for r in records:
-        groups[(r["target"], r["mode"], r["size"], r["label"])].append(window_counts(r))
+        twin = serial.get((r["target"], r["mode"], r["size"], r["window"]))
+        groups[(r["target"], r["mode"], r["size"], r["label"])].append(window_counts(r, twin))
     targets = sorted({k[0] for k in groups})
     modes = sorted({k[1] for k in groups})
     sizes = sorted({k[2] for k in groups})
@@ -399,7 +419,8 @@ def build_report(
 def format_table(summary: dict, scope: str = "all") -> str:
     """A plain-text table of the headline metrics for one scope."""
     head = (
-        f"{'mode':<12}{'N':>3}  {'policy':<40}{'tasks':>6} {'1st fail':>9} {'base':>7} "
+        f"{'mode':<12}{'N':>3}  {'policy':<40}{'tasks':>6} {'1st fail':>9} {'excess':>7} "
+        f"{'base':>7} "
         f"{'merge':>7} {'semantic':>9} {'landed':>7} {'wasted':>7} {'rounds/N':>9} "
         f"{'rounds/landed':>14}"
     )
@@ -409,7 +430,8 @@ def format_table(summary: dict, scope: str = "all") -> str:
             continue
         lines.append(
             f"{row['mode']:<12}{row['size']:>3}  {row['policy']:<40}{row['tasks']:>6} "
-            f"{_pct(row['first_attempt_failure']):>9} {_pct(row['base_conflict']):>7} "
+            f"{_pct(row['first_attempt_failure']):>9} {_pct(row['excess_over_serial']):>7} "
+            f"{_pct(row['base_conflict']):>7} "
             f"{_pct(row['merge_conflict']):>7} {_pct(row['semantic_conflict']):>9} "
             f"{_pct(row['landed']):>7} {_pct(row['wasted_work']):>7} "
             f"{row['makespan_vs_serial']['value']:>9.2f} "

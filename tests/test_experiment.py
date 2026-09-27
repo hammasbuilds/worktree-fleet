@@ -310,3 +310,24 @@ def test_conflict_kind():
     assert conflict_kind(["CHANGES.rst", "docs/CHANGELOG.md"]) == "changelog"
     assert conflict_kind([".github/workflows/tests.yaml", "uv.lock"]) == "other"
     assert conflict_kind([]) == "other"
+
+
+def test_excess_over_serial_counts_only_failures_serial_did_not_have():
+    parallel = _record(
+        [
+            ("base-conflict", "base", "accepted", []),
+            ("base-conflict", "base", "accepted", []),
+            ("accepted", None, "accepted", []),
+        ]
+    )
+    serial = _record(
+        [
+            ("accepted", None, "accepted", []),
+            ("base-conflict", "base", "accepted", []),  # fails serially too: not parallelism
+            ("accepted", None, "accepted", []),
+        ],
+        label="serial",
+    )
+    c = window_counts(parallel, serial)
+    assert c["first_fail"] == 2 and c["excess_fail"] == 1 and c["paired_tasks"] == 3
+    assert window_counts(parallel)["paired_tasks"] == 0

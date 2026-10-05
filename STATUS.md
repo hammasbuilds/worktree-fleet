@@ -51,17 +51,17 @@ each**; generations are cached, so the run resumes. Output: `results/runs-llm/`,
 ## Reproduce
 
 ```bash
-cd D:/github/worktree-fleet
+cd worktree-fleet
 bash scripts/fetch_targets.sh            # targets/<name>, pinned heads
 bash scripts/setup_target_venvs.sh       # targets/.venvs/<name>, pinned test environments
 # run from a frozen copy so edits cannot reach the worker processes mid-run
 git worktree add --detach ../wf-snapshot HEAD && cd ../wf-snapshot && uv sync
 for t in flask sqlparse click more-itertools flask-2x; do
-  uv run fleet experiment --targets D:/github/worktree-fleet/targets.toml --target $t \
-    --workers 6 --max-windows 40 --out D:/github/worktree-fleet/results/runs \
-    --cache D:/github/worktree-fleet/targets/.fleet
+  uv run fleet experiment --targets ../worktree-fleet/targets.toml --target $t \
+    --workers 6 --max-windows 40 --out ../worktree-fleet/results/runs \
+    --cache ../worktree-fleet/targets/.fleet
 done
-cd D:/github/worktree-fleet
+cd ../worktree-fleet
 uv run fleet report                       # results/summary.json + the table
 uv run pytest -q && uv run python demo.py
 ```

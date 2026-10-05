@@ -23,6 +23,8 @@
 Inspired by [stablyai/orca](https://github.com/stablyai/orca), herdr and munder-difflin, which run
 fleets of coding agents side by side in git worktrees; no code from any of them is used.
 
+**Status:** replay experiment and every number below: done. Model arm: built and tested against a fake; GPU run pending.
+
 ## The through-line
 
 ```mermaid
@@ -134,7 +136,7 @@ there the `merge=union` rows equal the plain ones and its changelog conflicts co
 
 ## Input / Output
 
-Every sample below is real output from this machine.
+Every sample below is real output.
 
 **1 · Plan four real flask changes** (`fleet plan`). Base `284273e3c5`; the tasks are the next
 four first-parent commits.
@@ -275,7 +277,7 @@ uv run python demo.py         # the four known-answer tasks above
 uv run fleet run --repo /path/to/repo --tasks tasks.json --policy predicted \
     --predictor description --python /path/to/venv/python --pytest-args tests
 
-# reproduce the experiment (hours; see STATUS.md for the exact commands)
+# reproduce the experiment (hours; exact commands below)
 bash scripts/fetch_targets.sh && bash scripts/setup_target_venvs.sh
 uv run fleet experiment --workers 6 --max-windows 40
 uv run fleet report
@@ -283,12 +285,39 @@ uv run fleet report
 
 A task file is `[{"id": "...", "description": "...", "commit": "optional sha to replay"}]`.
 
+### Reproduce the experiment
+
+```bash
+cd worktree-fleet
+bash scripts/fetch_targets.sh            # targets/<name>, pinned heads
+bash scripts/setup_target_venvs.sh       # targets/.venvs/<name>, pinned test environments
+# run from a frozen copy so edits cannot reach the worker processes mid-run
+git worktree add --detach ../wf-snapshot HEAD && cd ../wf-snapshot && uv sync
+for t in flask sqlparse click more-itertools flask-2x; do
+  uv run fleet experiment --targets ../worktree-fleet/targets.toml --target $t \
+    --workers 6 --max-windows 40 --out ../worktree-fleet/results/runs \
+    --cache ../worktree-fleet/targets/.fleet
+done
+cd ../worktree-fleet
+uv run fleet report                       # results/summary.json + the table
+uv run pytest -q && uv run python demo.py
+```
+
+The `fleet plan` / `fleet run` samples are the exact commands shown under Input / Output, run
+from the repository root.
+
+The runs in `results/runs/` were produced from a frozen snapshot at commit `f755a7d`. Later
+commits changed the report (shared resamples, file-kind breakdown, novel-state count), the CLI
+(`--order`, `--python` validation), crash handling for agents, and dropped a per-window pairwise
+field the report no longer reads; the fleet, queue, replay and attribution logic the runs used
+is unchanged. `fleet report` regenerates `results/summary.json` from those runs.
+
 ## The model arm
 
 `OllamaAgent` asks a local model for SEARCH/REPLACE edit blocks, given the task description and
 the files the description predictor points at; every generation is cached on disk under
-(model, prompt hash, options). It is built and tested against a fake client, and queued rather
-than run - the GPU was busy. `scripts/run_models.sh --dry-run` prints the job list and the call
+(model, prompt hash, options). It is built and tested against a fake client; its GPU run is
+pending. `scripts/run_models.sh --dry-run` prints the job list and the call
 count (672 first-attempt calls for flask and click at N=2,4,8 with 8 windows per size, up to
 twice that with redos); `scripts/run_models.sh` runs it after checking free RAM, free VRAM and
 that the model is pulled.
@@ -337,7 +366,7 @@ end on a small history.
 - **It does not measure LLM agents yet.** The replay agent reproduces what humans actually
   wrote. A real agent working from the stale base would write a different patch - the collision
   would then show up at merge time rather than as a patch that cannot apply - and would make
-  mistakes of its own. The model arm is built and queued for that.
+  mistakes of its own. The model arm is built for that; its GPU run is pending.
 - **Replay cannot create interaction conflicts from nothing.** Each real change was written
   knowing about the ones before it, so two independent changes that break each other only appear
   if history happened to contain them. One interaction pair in 6,339 novel states is a result

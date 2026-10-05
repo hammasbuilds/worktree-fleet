@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -95,10 +96,12 @@ def _usable_python(python: str) -> str:
     """An absolute path to a python that can run pytest, or a clear error.
 
     Tests run with each worktree as the working directory, so a relative path that works
-    from here would not be found there.
+    from here would not be found there. The path is made absolute without following
+    symlinks: a POSIX virtualenv's `bin/python` is a symlink to the base interpreter, and
+    resolving it would swap the venv (which has pytest) for one that does not.
     """
     candidate = Path(python)
-    resolved = str(candidate.resolve()) if candidate.exists() else python
+    resolved = os.path.abspath(candidate) if candidate.exists() else python
     try:
         proc = subprocess.run(
             [resolved, "-m", "pytest", "--version"], capture_output=True, text=True, timeout=120
